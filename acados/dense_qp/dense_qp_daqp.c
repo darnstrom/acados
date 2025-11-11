@@ -35,8 +35,8 @@
 #include <string.h>
 #include <stdio.h>
 // blasfeo
-#include "blasfeo/include/blasfeo_d_aux.h"
-#include "blasfeo/include/blasfeo_d_blas.h"
+#include "blasfeo_d_aux.h"
+#include "blasfeo_d_blas.h"
 
 // daqp
 #define SOFT_WEIGHTS
@@ -150,6 +150,13 @@ void dense_qp_daqp_opts_set(void *config_, void *opts_, const char *field, void 
     return;
 }
 
+void dense_qp_daqp_opts_get(void *config_, void *opts_, const char *field, void *value)
+{
+    // dense_qp_daqp_opts *opts = opts_;
+    printf("\nerror: dense_qp_daqp_opts_get: not implemented for field: %s\n", field);
+    exit(1);
+}
+
 
 
 /************************************************
@@ -200,6 +207,7 @@ acados_size_t dense_qp_daqp_memory_calculate_size(void *config_, dense_qp_dims *
     int m = dims->nv + dims->ng + dims->ne;
     int ms = dims->nv;
     int nb = dims->nb;
+    int ng = dims->ng;
     int ns = dims->ns;
 
     acados_size_t size = sizeof(dense_qp_daqp_memory);
@@ -208,6 +216,7 @@ acados_size_t dense_qp_daqp_memory_calculate_size(void *config_, dense_qp_dims *
 
     size += nb * 2 * sizeof(c_float); // lb_tmp & ub_tmp
     size += nb * 1 * sizeof(int); // idbx
+    size += (nb + ng) * sizeof(int); // idxs_rev
     size += n *  1 * sizeof(int); // idxv_to_idxb;
     size += ns * 1 * sizeof(int); // idbs
     size += m  * 1 * sizeof(int); // idxdaqp_to_idxs;
@@ -348,6 +357,7 @@ void *dense_qp_daqp_memory_assign(void *config_, dense_qp_dims *dims, void *opts
     int m = dims->nv + dims->ng + dims->ne;
     int ms = dims->nv;
     int nb = dims->nb;
+    int ng = dims->ng;
     int ns = dims->ns;
 
     // char pointer
@@ -372,6 +382,10 @@ void *dense_qp_daqp_memory_assign(void *config_, dense_qp_dims *dims, void *opts
 
     mem->idxb = (int *) c_ptr;
     c_ptr += nb * 1 * sizeof(int);
+
+    mem->idxs_rev = (int *) c_ptr;
+    c_ptr += (nb + ng) * sizeof(int);
+
 
     mem->idxv_to_idxb = (int *) c_ptr;
     c_ptr += n * 1 * sizeof(int);
@@ -482,7 +496,7 @@ static void dense_qp_daqp_update_memory(dense_qp_in *qp_in, const dense_qp_daqp_
         work->qp->A+nv*ng, work->qp->bupper+nv+ng,  // equalities
         idxb, lb_tmp, ub_tmp,  // bounds
         work->qp->A, work->qp->blower+nv, work->qp->bupper+nv,  // general linear constraints
-        mem->Zl, mem->Zu, mem->zl, mem->zu, idxs, mem->d_ls, mem->d_us  // slacks
+        mem->Zl, mem->Zu, mem->zl, mem->zu, idxs, mem->idxs_rev, mem->d_ls, mem->d_us  // slacks
     );
 
     // printf("\nDAQP: matrix A\n");
@@ -767,16 +781,28 @@ int dense_qp_daqp(void* config_, dense_qp_in *qp_in, dense_qp_out *qp_out, void 
         acados_status = ACADOS_SUCCESS;
     else if (daqp_status == EXIT_ITERLIMIT)
         acados_status = ACADOS_MAXITER;
+    else if (daqp_status == EXIT_INFEASIBLE)
+        acados_status = ACADOS_INFEASIBLE;
+    else if (daqp_status == EXIT_UNBOUNDED)
+        acados_status = ACADOS_UNBOUNDED;
+    else
+        acados_status = ACADOS_UNKNOWN;
     // NOTE: There are also:
-    // EXIT_INFEASIBLE, EXIT_CYCLE, EXIT_UNBOUNDED, EXIT_NONCONVEX, EXIT_OVERDETERMINED_INITIAL
-
+    // EXIT_CYCLE, EXIT_UNBOUNDED, EXIT_NONCONVEX, EXIT_OVERDETERMINED_INITIAL
     return acados_status;
 }
 
 
-void dense_qp_daqp_eval_sens(void *config_, void *qp_in, void *qp_out, void *opts_, void *mem_, void *work_)
+void dense_qp_daqp_eval_forw_sens(void *config_, void *qp_in, void *seed, void *qp_out, void *opts_, void *mem_, void *work_)
 {
-    printf("\nerror: dense_qp_daqp_eval_sens: not implemented yet\n");
+    printf("\nerror: dense_qp_daqp_eval_forw_sens: not implemented yet\n");
+    exit(1);
+}
+
+
+void dense_qp_daqp_eval_adj_sens(void *config_, void *qp_in, void *seed, void *qp_out, void *opts_, void *mem_, void *work_)
+{
+    printf("\nerror: dense_qp_daqp_eval_adj_sens: not implemented yet\n");
     exit(1);
 }
 
@@ -812,6 +838,7 @@ void dense_qp_daqp_config_initialize_default(void *config_)
         (void (*)(void *, void *, void *)) & dense_qp_daqp_opts_initialize_default;
     config->opts_update = (void (*)(void *, void *, void *)) & dense_qp_daqp_opts_update;
     config->opts_set = &dense_qp_daqp_opts_set;
+    config->opts_get = &dense_qp_daqp_opts_get;
     config->memory_calculate_size =
         (acados_size_t (*)(void *, void *, void *)) & dense_qp_daqp_memory_calculate_size;
     config->memory_assign =
@@ -819,7 +846,8 @@ void dense_qp_daqp_config_initialize_default(void *config_)
     config->memory_get = &dense_qp_daqp_memory_get;
     config->workspace_calculate_size =
         (acados_size_t (*)(void *, void *, void *)) & dense_qp_daqp_workspace_calculate_size;
-    config->eval_sens = &dense_qp_daqp_eval_sens;
+    config->eval_forw_sens = &dense_qp_daqp_eval_forw_sens;
+    config->eval_adj_sens = &dense_qp_daqp_eval_adj_sens;
     config->evaluate = (int (*)(void *, void *, void *, void *, void *, void *)) & dense_qp_daqp;
     config->memory_reset = &dense_qp_daqp_memory_reset;
     config->solver_get = &dense_qp_daqp_solver_get;

@@ -1,4 +1,3 @@
-# -*- coding: future_fstrings -*-
 #
 # Copyright (c) The acados authors.
 #
@@ -32,7 +31,7 @@
 # authors: Katrin Baumgaertner, Jonathan Frey
 
 import os, pickle
-from furuta_model import get_furuta_model
+from furuta_common import get_furuta_model
 
 import numpy as np
 from matplotlib.lines import Line2D

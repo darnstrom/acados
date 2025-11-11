@@ -1,4 +1,3 @@
-# -*- coding: future_fstrings -*-
 #
 # Copyright (c) The acados authors.
 #
@@ -28,8 +27,6 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.;
 #
-
-# authors: Katrin Baumgaertner, Jonathan Frey
 
 from cstr_model import CstrParameters, setup_cstr_model
 from setup_acados_ocp_solver import MpcCstrParameters

@@ -41,13 +41,14 @@
 #include "hpipm/include/hpipm_d_dense_qp_ipm.h"
 #include "hpipm/include/hpipm_d_dense_qp_kkt.h"
 #include "hpipm/include/hpipm_d_dense_qp_res.h"
+#include "hpipm/include/hpipm_d_dense_qp_seed.h"
 #include "hpipm/include/hpipm_d_dense_qp_sol.h"
 #include "hpipm/include/hpipm_d_dense_qp_dim.h"
 
 // blasfeo
-#include "blasfeo/include/blasfeo_d_aux.h"
-#include "blasfeo/include/blasfeo_d_aux_ext_dep.h"
-#include "blasfeo/include/blasfeo_d_blas.h"
+#include "blasfeo_d_aux.h"
+#include "blasfeo_d_aux_ext_dep.h"
+#include "blasfeo_d_blas.h"
 // acados
 #include "acados/dense_qp/dense_qp_common.h"
 #include "acados/utils/types.h"
@@ -108,7 +109,7 @@ dense_qp_dims *dense_qp_dims_assign(void *raw_memory)
     d_dense_qp_dim_create(dims, c_ptr);
     c_ptr += d_dense_qp_dim_memsize();
 
-    assert((char *) raw_memory + dense_qp_dims_calculate_size() == c_ptr);
+    assert((char *) raw_memory + dense_qp_dims_calculate_size() >= c_ptr);
 
     return dims;
 }
@@ -164,8 +165,6 @@ dense_qp_in *dense_qp_in_assign(dense_qp_dims *dims, void *raw_memory)
     qp_in->dim->nb = dims->nb;
     qp_in->dim->ng = dims->ng;
     qp_in->dim->ns = dims->ns;
-    qp_in->dim->nsb = dims->nsb;
-    qp_in->dim->nsg = dims->nsg;
 
     assert((char *) raw_memory + dense_qp_in_calculate_size(dims) >= c_ptr);
 
@@ -228,6 +227,35 @@ void dense_qp_out_get(dense_qp_out *out, const char *field, void *value)
     return;
 }
 
+/************************************************
+ * seed
+ ************************************************/
+
+acados_size_t dense_qp_seed_calculate_size(dense_qp_dims *dims)
+{
+    acados_size_t size = sizeof(dense_qp_seed);
+    size += d_dense_qp_seed_memsize(dims);
+
+    make_int_multiple_of(8, &size);
+    return size;
+}
+
+
+
+dense_qp_seed *dense_qp_seed_assign(dense_qp_dims *dims, void *raw_memory)
+{
+    char *c_ptr = (char *) raw_memory;
+
+    dense_qp_seed *qp_seed = (dense_qp_seed *) c_ptr;
+    c_ptr += sizeof(dense_qp_seed);
+
+    align_char_to(8, &c_ptr);
+    d_dense_qp_seed_create(dims, qp_seed, c_ptr);
+    c_ptr += d_dense_qp_seed_memsize(dims);
+    assert((char *) raw_memory + dense_qp_seed_calculate_size(dims) >= c_ptr);
+
+    return qp_seed;
+}
 
 
 /************************************************
@@ -350,6 +378,20 @@ void dense_qp_res_compute(dense_qp_in *qp_in, dense_qp_out *qp_out, dense_qp_res
 
     // compute residuals
     d_dense_qp_res_compute(qp_in, qp_out, qp_res, res_ws);
+
+    /* mask out disregarded constraints; NOTE: not needed anymore as done in HPIPM */
+    // int nb = qp_res->dim->nb;
+    // int nv = qp_res->dim->nv;
+    // int ng = qp_res->dim->ng;
+    // int ns = qp_res->dim->ns;
+    // int ni = nb + ng + ns;
+
+    // // stationarity wrt slacks
+    // blasfeo_dvecmul(2*ns, qp_in->d_mask, 2*nb+2*ng, qp_res->res_g, nv, qp_res->res_g, nv);
+    // // ineq
+    // blasfeo_dvecmul(2*ni, qp_in->d_mask, 0, qp_res->res_d, 0, qp_res->res_d, 0);
+    // // comp
+    // blasfeo_dvecmul(2*ni, qp_in->d_mask, 0, qp_res->res_m, 0, qp_res->res_m, 0);
 }
 
 
@@ -370,17 +412,51 @@ void dense_qp_res_compute_nrm_inf(dense_qp_res *qp_res, double res[4])
 
 
 
-void dense_qp_stack_slacks_dims(dense_qp_dims *in, dense_qp_dims *out)
+void dense_qp_stack_slacks_dims_upperbound(dense_qp_dims *in, dense_qp_dims *out)
 {
     out->nv = in->nv + 2 * in->ns;
     out->ne = in->ne;
-    out->nb = in->nb - in->nsb + 2 * in->ns;
-    out->ng = in->ns > 0 ? in->ng + in->nsb : in->ng;
+    out->nb = in->nb + 2 * in->ns;
+    out->ng = in->ng + in->nb;
     out->ns = 0;
-    out->nsb = 0;
-    out->nsg = 0;
 }
 
+
+// TODO: generalize this to handle real idxs_rev.
+void dense_qp_stack_slacks_recover_nsb_nsg_from_idxs_rev(dense_qp_dims *in, int *idxs_rev, int* nsb, int *nsg)
+{
+    // recover nsb, nsg from idxs_rev
+    *nsb = 0;
+    *nsg = 0;
+
+    for (int ii = 0; ii < in->nb; ii++)
+    {
+        if (idxs_rev[ii] > -1)
+        {
+            *nsb += 1;
+        }
+    }
+    for (int ii = in->nb; ii < in->nb + in->ng; ii++)
+    {
+        if (idxs_rev[ii] > -1)
+        {
+            *nsg += 1;
+        }
+    }
+}
+
+
+void dense_qp_stack_slacks_dims_from_idxs_rev(dense_qp_dims *in, int *idxs_rev, dense_qp_dims *out)
+{
+    int nsb, nsg;
+    dense_qp_stack_slacks_recover_nsb_nsg_from_idxs_rev(in, idxs_rev, &nsb, &nsg);
+    // set dims
+    out->nv = in->nv + 2 * in->ns;
+    out->ne = in->ne;
+    out->nb = in->nb - nsb + 2 * in->ns;
+    out->ng = in->ns > 0 ? in->ng + nsb : in->ng;
+    out->ns = 0;
+}
 
 
 void dense_qp_stack_slacks(dense_qp_in *in, dense_qp_in *out)
@@ -390,8 +466,6 @@ void dense_qp_stack_slacks(dense_qp_in *in, dense_qp_in *out)
     int nb = in->dim->nb;
     int ng = in->dim->ng;
     int ns = in->dim->ns;
-    int nsb = in->dim->nsb;
-    // int nsg = in->dim->nsg;
     int *idxs_rev = in->idxs_rev;
     int *idxb = in->idxb;
 
@@ -399,6 +473,9 @@ void dense_qp_stack_slacks(dense_qp_in *in, dense_qp_in *out)
     int ne2 = out->dim->ne;
     int nb2 = out->dim->nb;
     int ng2 = out->dim->ng;
+
+    int nsb, nsg;
+    dense_qp_stack_slacks_recover_nsb_nsg_from_idxs_rev(in->dim, idxs_rev, &nsb, &nsg);
 
     assert(nv2 == nv+2*ns && "Dimensions are wrong!");
     assert(nb2 == nb-nsb+2*ns && "Dimensions are wrong!");
@@ -546,8 +623,6 @@ void dense_qp_unstack_slacks(dense_qp_out *in, dense_qp_in *qp_out, dense_qp_out
     int nb = qp_out->dim->nb;
     int ng = qp_out->dim->ng;
     int ns = qp_out->dim->ns;
-    int nsb = qp_out->dim->nsb;
-    // int nsg = qp_out->dim->nsg;
 
     int *idxs_rev = qp_out->idxs_rev;
 
@@ -555,6 +630,9 @@ void dense_qp_unstack_slacks(dense_qp_out *in, dense_qp_in *qp_out, dense_qp_out
     // int ne2 = in->dim->ne;
     int nb2 = in->dim->nb;
     int ng2 = in->dim->ng;
+
+    int nsb, nsg;
+    dense_qp_stack_slacks_recover_nsb_nsg_from_idxs_rev(in->dim, idxs_rev, &nsb, &nsg);
 
     UNUSED(nsb);
     UNUSED(nv2);

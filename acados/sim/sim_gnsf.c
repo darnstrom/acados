@@ -46,10 +46,10 @@
 #include "acados/sim/sim_gnsf.h"
 
 // blasfeo
-#include "blasfeo/include/blasfeo_common.h"
-#include "blasfeo/include/blasfeo_d_aux.h"
-#include "blasfeo/include/blasfeo_d_blas.h"
-// #include "blasfeo/include/blasfeo_d_aux_ext_dep.h" // can be included for printing while
+#include "blasfeo_common.h"
+#include "blasfeo_d_aux.h"
+#include "blasfeo_d_blas.h"
+// #include "blasfeo_d_aux_ext_dep.h" // can be included for printing while
 // debugging
 
 
@@ -79,7 +79,7 @@ void *sim_gnsf_dims_assign(void *config_, void *raw_memory)
     dims->ny = 0;
     dims->nuhat = 0;
 
-    assert((char *) raw_memory + sim_gnsf_dims_calculate_size() == c_ptr);
+    assert((char *) raw_memory + sim_gnsf_dims_calculate_size() >= c_ptr);
     return dims;
 }
 

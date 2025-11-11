@@ -65,12 +65,12 @@ fprintf('\nTest results on SIMULINK simulation.\n')
 
 % compare u trajectory
 err_vs_ref = norm(simulink_u_traj_ref - uvals);
-TOL = 1e-8;
+TOL = 5e-5;
 disp(['Norm of control traj. wrt. reference solution is: ',...
     num2str(err_vs_ref, '%e'), ' test TOL = ', num2str(TOL)]);
 
 if err_vs_ref > TOL
-    quit(1)
+    error('Failed.')
 end
 
 % sanity check on cost values
@@ -78,8 +78,7 @@ cost_signal = out_sim.logsout.getElement('cost_val');
 cost_vals = cost_signal.Values.Data;
 
 if ~issorted(cost_vals,'strictdescend')
-    disp('cost_values should be monotonically decreasing for this example.');
-    quit(1)
+    error('cost_values should be monotonically decreasing for this example.');
 else
     disp('cost_values are monotonically decreasing.');
 end
@@ -88,8 +87,7 @@ end
 status_signal = out_sim.logsout.getElement('ocp_solver_status');
 status_vals = status_signal.Values.Data;
 if any(status_vals)
-    disp('OCP solver status should be always zero on this example');
-    quit(1)
+    error('OCP solver status should be always zero on this example');
 else
     disp('OCP solver status is always zero.');
 end

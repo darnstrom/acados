@@ -33,16 +33,16 @@ from setuptools import setup, find_packages
 import sys
 print(sys.version_info)
 
-if sys.version_info < (3,5):
-    sys.exit('Python version 3.5 or later required. Exiting.')
+if sys.version_info < (3,8):
+    sys.exit('Python version 3.8 or later required. Exiting.')
 
 setup(name='acados_template',
-    version='0.1',
-    python_requires='>=3.5',
+    version='0.5.1',
+    python_requires='>=3.8',
     description='A templating framework for acados',
     url='http://github.com/acados/acados',
-    author='Andrea Zanelli',
-    maintainer="Jonathan Frey",
+    author='The acados authors.',
+    maintainer="The acados authors.",
     license='BSD 2-Clause',
     packages = find_packages(),
     include_package_data = True,
@@ -57,8 +57,8 @@ setup(name='acados_template',
        'scipy',
        'casadi',
        'matplotlib',
-       'future-fstrings',
        'cython',
+       'Deprecated',
     ],
     package_data={'': [
         'simulink_default_opts.json',
@@ -75,6 +75,12 @@ setup(name='acados_template',
         'c_templates_tera/main.in.c',
         'c_templates_tera/main_sim.in.c',
         'c_templates_tera/model.in.h',
+        'c_templates_tera/p_global_precompute_fun.in.h',
+        'c_templates_tera/acados_multi_solver.in.c',
+        'c_templates_tera/acados_multi_solver.in.h',
+        'c_templates_tera/multi_Makefile.in',
+        'c_templates_tera/multi_CMakeLists.in.txt',
+        'c_templates_tera/main_multi.in.c',
         'c_templates_tera/matlab_templates/acados_mex_create.in.c',
         'c_templates_tera/matlab_templates/acados_mex_free.in.c',
         'c_templates_tera/matlab_templates/acados_mex_set.in.c',

@@ -1,4 +1,3 @@
-# -*- coding: future_fstrings -*-
 #
 # Copyright (c) The acados authors.
 #
@@ -43,14 +42,18 @@ import argparse
 
 INTEGRATOR_TYPES = ['ERK', 'IRK', 'GNSF', 'DISCRETE']
 BUILD_SYSTEMS = ['cmake', 'make']
-
+QP_SOLVERS = ['PARTIAL_CONDENSING_HPIPM', 'FULL_CONDENSING_QPOASES', 'FULL_CONDENSING_HPIPM', \
+                'PARTIAL_CONDENSING_QPDUNES', 'PARTIAL_CONDENSING_OSQP', \
+                'FULL_CONDENSING_DAQP']
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='test Python interface on pendulum example.')
-    parser.add_argument('--INTEGRATOR_TYPE', dest='INTEGRATOR_TYPE',
+    parser.add_argument('--INTEGRATOR_TYPE', dest='INTEGRATOR_TYPE', default="ERK",
                         help=f'INTEGRATOR_TYPE: supports {INTEGRATOR_TYPES}')
     parser.add_argument('--BUILD_SYSTEM', dest='BUILD_SYSTEM',
                         default='make',
                         help=f'BUILD_SYSTEM: supports {BUILD_SYSTEMS}')
+    parser.add_argument('--QP_SOLVER', dest='QP_SOLVER', default='PARTIAL_CONDENSING_HPIPM',
+                        help=f'QP_SOLVER: supports {QP_SOLVERS}')
 
     args = parser.parse_args()
 
@@ -62,8 +65,14 @@ if __name__ == "__main__":
 
     build_system = args.BUILD_SYSTEM
     if build_system not in BUILD_SYSTEMS:
-        msg = f'Invalid unit test value {build_system} for parameter INTEGRATOR_TYPE. Possible values are' \
+        msg = f'Invalid unit test value {build_system} for parameter BUILD_SYSTEM. Possible values are' \
               f' {BUILD_SYSTEMS}, got {build_system}.'
+        raise Exception(msg)
+
+    qp_solver = args.QP_SOLVER
+    if qp_solver not in QP_SOLVERS:
+        msg = f'Invalid unit test value {qp_solver} for parameter QP_SOLVER. Possible values are' \
+              f' {QP_SOLVERS}, got {qp_solver}.'
         raise Exception(msg)
 
     # create ocp object to formulate the OCP
@@ -91,6 +100,10 @@ if __name__ == "__main__":
     # set cost
     Q = 2*np.diag([1e3, 1e3, 1e-2, 1e-2])
     R = 2*np.diag([1e-2])
+    if qp_solver == 'PARTIAL_CONDENSING_QPDUNES':
+        # NOTE: qpDUNES requires very similar values on diag of hessian.
+        Q = 2*np.diag([1e3, 1e3, 1e-0, 1e-0])
+        R = 2*np.diag([1e-0])
 
     ocp.cost.W_e = Q
     ocp.cost.W = scipy.linalg.block_diag(Q, R)
@@ -114,10 +127,12 @@ if __name__ == "__main__":
     ocp.constraints.x0 = np.array([0.0, np.pi, 0.0, 0.0])
     ocp.constraints.idxbu = np.array([0])
 
-    ocp.solver_options.qp_solver = 'PARTIAL_CONDENSING_HPIPM'  # FULL_CONDENSING_QPOASES
+    ocp.solver_options.qp_solver = qp_solver
     ocp.solver_options.hessian_approx = 'GAUSS_NEWTON'
     ocp.solver_options.integrator_type = integrator_type
     ocp.solver_options.print_level = 1
+    ocp.solver_options.log_dual_step_norm = True
+    ocp.solver_options.log_primal_step_norm = True
 
     if ocp.solver_options.integrator_type == 'GNSF':
         from acados_template import acados_dae_model_json_dump
@@ -170,5 +185,14 @@ if __name__ == "__main__":
         simX[i, :] = ocp_solver.get(i, "x")
         simU[i, :] = ocp_solver.get(i, "u")
     simX[N, :] = ocp_solver.get(N, "x")
+
+    # test getting step norms
+    primal_step_norms = ocp_solver.get_stats('primal_step_norm')
+    dual_step_norms = ocp_solver.get_stats('dual_step_norm')
+    print(f"primal step norms: {primal_step_norms}")
+    print(f"dual step norms: {dual_step_norms}")
+    # Assert that step norms are decreasing
+    assert np.all(np.diff(primal_step_norms)[1:] <= 0), "Primal step norms are not decreasing."
+    assert np.all(np.diff(dual_step_norms) <= 0), "Dual step norms are not decreasing."
 
     plot_pendulum(np.linspace(0, Tf, N+1), Fmax, simU, simX)

@@ -56,15 +56,7 @@ extern "C" {
 typedef struct
 {
     ocp_nlp_opts *nlp_opts;
-    double tol_stat;     // exit tolerance on stationarity condition
-    double tol_eq;       // exit tolerance on equality constraints
-    double tol_ineq;     // exit tolerance on inequality constraints
-    double tol_comp;     // exit tolerance on complementarity condition
     double tol_zero_res; // exit tolerance if objective function is 0 for least-squares problem
-    int ext_qp_res;      // compute external QP residuals (i.e. at SQP level) at each SQP iteration (for debugging)
-    int qp_warm_start;   // qp_warm_start in all but the first ddp iterations
-    bool warm_start_first_qp; // to set qp_warm_start in first iteration
-    bool eval_residual_at_max_iter; // if convergence should be checked after last iterations or only throw max_iter reached
 } ocp_nlp_ddp_opts;
 
 //
@@ -151,7 +143,7 @@ void ocp_nlp_ddp_eval_lagr_grad_p(void *config_, void *dims_, void *nlp_in_, voi
 void ocp_nlp_ddp_get(void *config_, void *dims_, void *mem_, const char *field, void *return_value_);
 //
 void ocp_nlp_ddp_compute_trial_iterate(void *config_, void *dims_,
-            void *in_, void *out_, void *opts_, void *mem_,
+            void *in_, void *out_, void *qp_out_, void *opts_, void *mem_,
             void *work_, void *out_destination_, void *solver_mem,
             double alpha, bool full_step_dual);
 

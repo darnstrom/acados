@@ -37,16 +37,23 @@ if(CMAKE_SYSTEM_NAME MATCHES "dSpace")
 endif()
 
 # When BLASFEO is used as part of acados
-set(BLASFEO_HEADERS_INSTALLATION_DIRECTORY "include/blasfeo/include" CACHE STRING "")
+if(ACADOS_WITH_SYSTEM_BLASFEO)
+    find_package(blasfeo REQUIRED)
+else()
+    set(BLASFEO_HEADERS_INSTALLATION_DIRECTORY "include/blasfeo/include" CACHE STRING "")
 
-set(TARGET ${BLASFEO_TARGET} CACHE STRING "Set CPU architecture target" FORCE)
-set(MF "PANELMAJ" CACHE STRING "Matrix format" FORCE)
-set(BLAS_API OFF CACHE BOOL "Compile BLAS API" FORCE)
-add_subdirectory(blasfeo)
+    set(TARGET ${BLASFEO_TARGET} CACHE STRING "Set CPU architecture target" FORCE)
+    set(MF "PANELMAJ" CACHE STRING "Matrix format" FORCE)
+    set(BLAS_API OFF CACHE BOOL "Compile BLAS API" FORCE)
+    add_subdirectory(blasfeo)
+endif()
 
 # When HPIPM is used as part of acados
-set(HPIPM_BLASFEO_PATH ${BLASFEO_SRC_DIR} CACHE STRING "Set CPU architecture target" FORCE)
-
+if(ACADOS_WITH_SYSTEM_BLASFEO)
+    set(HPIPM_FIND_BLASFEO ON CACHE BOOL "" FORCE)
+else()
+    set(HPIPM_BLASFEO_PATH ${BLASFEO_SRC_DIR} CACHE STRING "Set CPU architecture target" FORCE)
+endif()
 set(HPIPM_BLASFEO_LIB OFF CACHE BOOL "Turn off BLASFEO from HPIPM" FORCE)
 set(HPIPM_HEADERS_INSTALLATION_DIRECTORY "include/hpipm/include" CACHE STRING "")
 set(TARGET ${HPIPM_TARGET} CACHE STRING "Set CPU architecture target" FORCE)
@@ -83,6 +90,16 @@ if(ACADOS_WITH_OSQP)
     set(PROFILING OFF CACHE BOOL "Turn off profiling in OSQP")
     set(CTRLC OFF CACHE BOOL "Turn off CTRLC in OSQP")
     add_subdirectory(osqp)
+endif()
+
+
+if(ACADOS_WITH_CLARABEL)
+    set(CLARABEL_BUILD_EXAMPLES OFF CACHE BOOL "set Clarabel examples" FORCE)
+    set(CLARABEL_C_OUTPUT_DIR "${CMAKE_INSTALL_PREFIX}/build/external/Clarabel.cpp" CACHE STRING "Set Clarabel.cpp output dir" FORCE)
+    set(PROFILING OFF CACHE BOOL "Turn off profiling in CLARABEL")
+    set(CTRLC OFF CACHE BOOL "Turn off CTRLC in CLARABEL")
+    add_subdirectory(Clarabel.cpp)
+    add_dependencies(acados libclarabel_c_shared)
 endif()
 
 if (ACADOS_WITH_OOQP)

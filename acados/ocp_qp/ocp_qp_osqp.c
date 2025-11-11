@@ -32,12 +32,13 @@
 #include <assert.h>
 
 // blasfeo
-#include "blasfeo/include/blasfeo_d_blasfeo_api.h"
+#include "blasfeo_d_blasfeo_api.h"
 
 // acados
 #include "acados/ocp_qp/ocp_qp_common.h"
 #include "acados/ocp_qp/ocp_qp_osqp.h"
 #include "acados/utils/mem.h"
+#include "acados/utils/math.h"
 #include "acados/utils/print.h"
 #include "acados/utils/timing.h"
 #include "acados/utils/types.h"
@@ -978,7 +979,7 @@ void *ocp_qp_osqp_opts_assign(void *config_, void *dims_, void *raw_memory)
     opts->osqp_opts = (OSQPSettings *) c_ptr;
     c_ptr += sizeof(OSQPSettings);
 
-    assert((char *) raw_memory + ocp_qp_osqp_opts_calculate_size(config_, dims_) == c_ptr);
+    assert((char *) raw_memory + ocp_qp_osqp_opts_calculate_size(config_, dims_) >= c_ptr);
 
     return (void *) opts;
 }
@@ -1026,8 +1027,8 @@ void ocp_qp_osqp_opts_set(void *config_, void *opts_, const char *field, void *v
         // opts->osqp_opts->eps_rel = *tol;
         // opts->osqp_opts->eps_dual_inf = *tol;
 
-        opts->osqp_opts->eps_rel = fmax(*tol, 1e-5);
-        opts->osqp_opts->eps_dual_inf = fmax(*tol, 1e-5);
+        opts->osqp_opts->eps_rel = MAX(*tol, 1e-5);
+        opts->osqp_opts->eps_dual_inf = MAX(*tol, 1e-5);
 
         if (*tol <= 1e-3)
         {
@@ -1066,6 +1067,14 @@ void ocp_qp_osqp_opts_set(void *config_, void *opts_, const char *field, void *v
     }
 
     return;
+}
+
+
+void ocp_qp_osqp_opts_get(void *config_, void *opts_, const char *field, void *value)
+{
+    // ocp_qp_osqp_opts *opts = opts_;
+    printf("\nerror: ocp_qp_osqp_opts_get: not implemented for field %s\n", field);
+    exit(1);
 }
 
 
@@ -1728,7 +1737,7 @@ int ocp_qp_osqp(void *config_, void *qp_in_, void *qp_out_, void *opts_, void *m
         osqp_update_P_A(mem->osqp_work, mem->P_x, NULL, mem->P_nnzmax, mem->A_x, NULL,
                         mem->A_nnzmax);
         osqp_update_bounds(mem->osqp_work, mem->l, mem->u);
-        // TODO(oj): update OSQP options here if they were updated?
+        cpy_osqp_settings(opts->osqp_opts, mem->osqp_work->settings);
     }
     else
     {
@@ -1768,10 +1777,19 @@ int ocp_qp_osqp(void *config_, void *qp_in_, void *qp_out_, void *opts_, void *m
         //printf("\nOSQP solved\n");
         acados_status = ACADOS_SUCCESS;
     }
-    if (osqp_status == OSQP_MAX_ITER_REACHED)
+    else if (osqp_status == OSQP_MAX_ITER_REACHED)
     {
         //printf("\nOSQP max iter reached\n");
         acados_status = ACADOS_MAXITER;
+    }
+    else if (osqp_status == OSQP_PRIMAL_INFEASIBLE)
+    {
+        //printf("\nOSQP primal infeasible\n");
+        acados_status = ACADOS_INFEASIBLE;
+    }
+    else
+    {
+        acados_status = ACADOS_UNKNOWN;
     }
     mem->status = acados_status;
 
@@ -1780,9 +1798,15 @@ int ocp_qp_osqp(void *config_, void *qp_in_, void *qp_out_, void *opts_, void *m
 
 
 
-void ocp_qp_osqp_eval_sens(void *config_, void *qp_in, void *qp_out, void *opts_, void *mem_, void *work_)
+void ocp_qp_osqp_eval_forw_sens(void *config_, void *qp_in, void *seed, void *qp_out, void *opts_, void *mem_, void *work_)
 {
-    printf("\nerror: ocp_qp_osqp_eval_sens: not implemented yet\n");
+    printf("\nerror: ocp_qp_osqp_eval_forw_sens: not implemented yet\n");
+    exit(1);
+}
+
+void ocp_qp_osqp_eval_adj_sens(void *config_, void *qp_in, void *seed, void *qp_out, void *opts_, void *mem_, void *work_)
+{
+    printf("\nerror: ocp_qp_osqp_eval_adj_sens: not implemented yet\n");
     exit(1);
 }
 
@@ -1803,13 +1827,15 @@ void ocp_qp_osqp_config_initialize_default(void *config_)
     config->opts_initialize_default = &ocp_qp_osqp_opts_initialize_default;
     config->opts_update = &ocp_qp_osqp_opts_update;
     config->opts_set = &ocp_qp_osqp_opts_set;
+    config->opts_get = &ocp_qp_osqp_opts_get;
     config->memory_calculate_size = &ocp_qp_osqp_memory_calculate_size;
     config->memory_assign = &ocp_qp_osqp_memory_assign;
     config->memory_get = &ocp_qp_osqp_memory_get;
     config->workspace_calculate_size = &ocp_qp_osqp_workspace_calculate_size;
     config->evaluate = &ocp_qp_osqp;
     config->terminate = &ocp_qp_osqp_terminate;
-    config->eval_sens = &ocp_qp_osqp_eval_sens;
+    config->eval_forw_sens = &ocp_qp_osqp_eval_forw_sens;
+    config->eval_adj_sens = &ocp_qp_osqp_eval_adj_sens;
     config->memory_reset = &ocp_qp_osqp_memory_reset;
     config->solver_get = &ocp_qp_osqp_solver_get;
 

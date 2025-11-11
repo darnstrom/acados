@@ -28,7 +28,10 @@
 % POSSIBILITY OF SUCH DAMAGE.;
 
 
-function ocp = formulate_single_integrator_ocp(settings)
+function ocp = formulate_single_integrator_ocp(settings, terminal_phase_ocp)
+    if nargin < 2
+        terminal_phase_ocp = 0;
+    end
     ocp = AcadosOcp();
 
     ocp.model = get_single_integrator_model();
@@ -48,7 +51,20 @@ function ocp = formulate_single_integrator_ocp(settings)
     ocp.constraints.ubu = [u_max];
     ocp.constraints.idxbu = [0];
 
-    ocp.constraints.x0 = settings.X0;
+    if settings.WITH_X_BOUNDS
+        ocp.constraints.lbx = [-100];
+        ocp.constraints.ubx = [100];
+        ocp.constraints.idxbx = [0];
+
+        ocp.constraints.lbx_e = [-100];
+        ocp.constraints.ubx_e = [100];
+        ocp.constraints.idxbx_e = [0];
+    end
+
+    % initial state constraint, not needed for terminal phase OCP.
+    if ~terminal_phase_ocp
+        ocp.constraints.x0 = settings.X0(1);
+    end
 end
 
 

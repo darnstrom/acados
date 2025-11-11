@@ -93,6 +93,7 @@ def main():
     ocp.constraints.ug = np.array([+Fmax])
 
     ocp.constraints.x0 = np.array([0.0, np.pi, 0.0, 0.0])
+    ocp.remove_x0_elimination()
 
     # set options
     ocp.solver_options.qp_solver = 'PARTIAL_CONDENSING_HPIPM' # FULL_CONDENSING_QPOASES
@@ -124,8 +125,8 @@ def main():
         else:
             status = ocp_solver.solve()
         # ocp_solver.custom_update(np.array([]))
-        ocp_solver.print_statistics() # encapsulates: stat = ocp_solver.get_stats("statistics")
-        residuals = ocp_solver.get_residuals()
+        ocp_solver.print_statistics()
+        residuals = ocp_solver.get_residuals(recompute=True)
         print("residuals after ", i, "SQP_RTI iterations:\n", residuals)
         if max(residuals) < tol:
             break
@@ -140,10 +141,13 @@ def main():
         simU[i,:] = ocp_solver.get(i, "u")
     simX[N,:] = ocp_solver.get(N, "x")
 
-    ocp_solver.print_statistics() # encapsulates: stat = ocp_solver.get_stats("statistics")
+    ocp_solver.print_statistics()
 
     cost = ocp_solver.get_cost()
     print("cost function value of solution = ", cost)
+
+    # test getter
+    assert np.allclose(ocp.constraints.C, ocp_solver.constraints_get(1, 'C'))
 
     PRINT_QP = False
 

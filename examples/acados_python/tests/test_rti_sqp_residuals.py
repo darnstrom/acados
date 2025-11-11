@@ -1,4 +1,3 @@
-# -*- coding: future_fstrings -*-
 #
 # Copyright (c) The acados authors.
 #
@@ -154,7 +153,7 @@ def main(nlp_solver_type="SQP"):
                 assert res_next[2] == res_ineq_all[-1]
                 assert res_next[3] == res_comp_all[-1]
             # overwrite res_next
-            res_next = solver.get_residuals()
+            res_next = solver.get_residuals(recompute=True)
             print(f"res_next: {res_next}")
 
             if max([res_stat_all[-1], res_eq_all[-1], res_ineq_all[-1], res_comp_all[-1]]) < TOL:

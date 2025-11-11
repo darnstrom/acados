@@ -91,71 +91,21 @@ classdef AcadosOcp < handle
             end
         end
 
-        function make_consistent(self, is_mocp_phase)
-            if nargin < 2
-                is_mocp_phase = false;
-            end
-            self.model.make_consistent(self.dims);
-
-            model = self.model;
-            dims = self.dims;
+        function make_consistent_cost_initial(self, initial_node_relevant)
             cost = self.cost;
-            constraints = self.constraints;
-            opts = self.solver_options;
-
-            N = opts.N_horizon;
-            self.detect_cost_and_constraints();
-
-            % check if nx != nx_next
-            if ~is_mocp_phase && dims.nx ~= dims.nx_next && opts.N_horizon > 1
-                error(['nx_next = ', num2str(dims.nx_next), ' must be equal to nx = ', num2str(dims.nx), ' if more than one shooting interval is used.']);
+            dims = self.dims;
+            model = self.model;
+            if self.solver_options.N_horizon == 0
+                return
             end
-
-            % detect GNSF structure
-            if strcmp(opts.integrator_type, 'GNSF')
-                if dims.gnsf_nx1 + dims.gnsf_nx2 ~= dims.nx
-                    % TODO: properly interface those.
-                    gnsf_transcription_opts = struct();
-                    detect_gnsf_structure(model, dims, gnsf_transcription_opts);
-                else
-                    warning('No GNSF model detected, assuming all required fields are set.')
-                end
-            end
-
-            % OCP name
-            self.name = model.name;
-
-            % parameters
-            if isempty(self.parameter_values)
-                if dims.np > 0
-                    warning(['self.parameter_values are not set.', ...
-                            10 'Using zeros(np,1) by default.' 10 'You can update them later using set().']);
-                end
-                self.parameter_values = zeros(self.dims.np,1);
-            elseif length(self.parameter_values) ~= self.dims.np
-                error(['parameter_values has the wrong shape. Expected: ' num2str(self.dims.np)])
-            end
-
-
-            % parameters
-            if isempty(self.p_global_values)
-                if dims.np_global > 0
-                    warning(['self.p_global_values are not set.', ...
-                            10 'Using zeros(np_global,1) by default.' 10 'You can update them later using set().']);
-                end
-                self.p_global_values = zeros(self.dims.np_global,1);
-            elseif length(self.p_global_values) ~= self.dims.np_global
-                error(['p_global_values has the wrong shape. Expected: ' num2str(self.dims.np_global)])
-            end
-
-            %% cost
-            % initial
             if strcmp(cost.cost_type_0, 'LINEAR_LS')
                 if ~isempty(cost.W_0) && ~isempty(cost.Vx_0) && ~isempty(cost.Vu_0)
                     ny = length(cost.W_0);
 
                     if isempty(cost.yref_0)
-                        warning(['yref_0 not defined provided.' 10 'Using zeros(ny_0,1) by default.']);
+                        if initial_node_relevant
+                            warning(['yref_0 not defined provided.' 10 'Using zeros(ny_0,1) by default.']);
+                        end
                         self.cost.yref_0 = zeros(ny,1);
                     end
                     if ny ~= size(cost.Vx_0, 1) || ny ~= size(cost.Vu_0, 1) || ny ~= size(cost.yref_0, 1)
@@ -169,7 +119,9 @@ classdef AcadosOcp < handle
                 if ~isempty(cost.W_0) && ~isempty(model.cost_y_expr_0)
                     ny = length(cost.W_0);
                     if isempty(cost.yref_0)
-                        warning(['yref_0 not defined provided.' 10 'Using zeros(ny_0,1) by default.']);
+                        if initial_node_relevant
+                            warning(['yref_0 not defined provided.' 10 'Using zeros(ny_0,1) by default.']);
+                        end
                         self.cost.yref_0 = zeros(ny,1);
                     end
                     if ny ~= length(model.cost_y_expr_0) || ny ~= size(cost.yref_0, 1)
@@ -179,14 +131,63 @@ classdef AcadosOcp < handle
                     error('setting nonlinear least square cost: need W_0, cost_y_expr_0, at least one missing.')
                 end
                 dims.ny_0 = ny;
+            elseif strcmp(cost.cost_type_0, 'CONVEX_OVER_NONLINEAR')
+                % MATLAB interface adaptation mirroring python _make_consistent_cost_initial
+                % Required model fields: cost_y_expr_0, cost_r_in_psi_expr_0, cost_psi_expr_0
+                if isempty(model.cost_y_expr_0)
+                    error('cost_y_expr_0 not provided for CONVEX_OVER_NONLINEAR initial cost.');
+                end
+                % determine ny_0 from cost_y_expr_0 (casadi SX/MX => size); allow numeric vector too
+                try
+                    ny = length(model.cost_y_expr_0); % works for CasADi MX/SX (returns number of elements)
+                catch
+                    ny = numel(model.cost_y_expr_0);
+                end
+                if isempty(model.cost_r_in_psi_expr_0)
+                    error('cost_r_in_psi_expr_0 not provided for CONVEX_OVER_NONLINEAR initial cost.');
+                end
+                if length(model.cost_r_in_psi_expr_0) ~= ny
+                    error('inconsistent dimension ny_0: regarding cost_y_expr_0 and cost_r_in_psi_expr_0.');
+                end
+                if isempty(model.cost_psi_expr_0)
+                    error('cost_psi_expr_0 not provided for CONVEX_OVER_NONLINEAR initial cost.');
+                end
+                if length(model.cost_psi_expr_0) ~= 1
+                    error('cost_psi_expr_0 must be scalar-valued.');
+                end
+                if isempty(cost.yref_0)
+                    if initial_node_relevant
+                        warning(['yref_0 not defined provided.' 10 'Using zeros(ny_0,1) by default.']);
+                    end
+                    self.cost.yref_0 = zeros(ny,1);
+                end
+                if size(cost.yref_0,1) ~= ny
+                    error('inconsistent dimension: regarding yref_0 and cost_y_expr_0, cost_r_in_psi_expr_0.');
+                end
+                dims.ny_0 = ny;
+                % Hessian approximation check (mirror python): allow GAUSS_NEWTON or EXACT with exact_hess_cost == false
+                opts = self.solver_options;
+                if ~( (strcmp(opts.hessian_approx,'EXACT') && opts.exact_hess_cost == false) || strcmp(opts.hessian_approx,'GAUSS_NEWTON') )
+                    error(['With CONVEX_OVER_NONLINEAR cost type, possible Hessian approximations are:' 10 ...
+                        'GAUSS_NEWTON or EXACT with exact_hess_cost == false.']);
+                end
             end
+        end
 
-            % path
+        function make_consistent_cost_path(self, path_nodes_relevant)
+            cost = self.cost;
+            dims = self.dims;
+            model = self.model;
+            if self.solver_options.N_horizon == 0
+                return
+            end
             if strcmp(cost.cost_type, 'LINEAR_LS')
                 if ~isempty(cost.W) && ~isempty(cost.Vx) && ~isempty(cost.Vu)
                     ny = length(cost.W);
                     if isempty(cost.yref)
-                        warning(['yref not defined provided.' 10 'Using zeros(ny,1) by default.']);
+                        if path_nodes_relevant
+                            warning(['yref not defined provided.' 10 'Using zeros(ny,1) by default.']);
+                        end
                         self.cost.yref = zeros(ny,1);
                     end
                     if ny ~= size(cost.Vx, 1) || ny ~= size(cost.Vu, 1) || ny ~= size(cost.yref, 1)
@@ -200,7 +201,9 @@ classdef AcadosOcp < handle
                 if ~isempty(cost.W) && ~isempty(model.cost_y_expr)
                     ny = length(cost.W);
                     if isempty(cost.yref)
-                        warning(['yref not defined provided.' 10 'Using zeros(ny,1) by default.']);
+                        if path_nodes_relevant
+                            warning(['yref not defined provided.' 10 'Using zeros(ny,1) by default.']);
+                        end
                         self.cost.yref = zeros(ny,1);
                     end
                     if ny ~= length(model.cost_y_expr) || ny ~= size(cost.yref, 1)
@@ -210,14 +213,51 @@ classdef AcadosOcp < handle
                     error('setting nonlinear least square cost: need W, cost_y_expr, at least one missing.')
                 end
                 dims.ny = ny;
+            elseif strcmp(cost.cost_type, 'CONVEX_OVER_NONLINEAR')
+                if isempty(model.cost_y_expr)
+                    error('cost_y_expr not provided for CONVEX_OVER_NONLINEAR path cost.');
+                end
+                try
+                    ny = length(model.cost_y_expr);
+                catch
+                    ny = numel(model.cost_y_expr);
+                end
+                if isempty(model.cost_r_in_psi_expr) || length(model.cost_r_in_psi_expr) ~= ny
+                    error('inconsistent dimension ny: regarding cost_y_expr and cost_r_in_psi_expr.');
+                end
+                if isempty(model.cost_psi_expr) || length(model.cost_psi_expr) ~= 1
+                    error('cost_psi_expr not provided or not scalar-valued.');
+                end
+                if isempty(cost.yref)
+                    if path_nodes_relevant
+                        warning(['yref not defined provided.' 10 'Using zeros(ny,1) by default.']);
+                    end
+                    self.cost.yref = zeros(ny,1);
+                end
+                if size(cost.yref,1) ~= ny
+                    error('inconsistent dimension: regarding yref and cost_y_expr, cost_r_in_psi_expr.');
+                end
+                dims.ny = ny;
+                opts = self.solver_options;
+                if ~( (strcmp(opts.hessian_approx,'EXACT') && opts.exact_hess_cost == false) || strcmp(opts.hessian_approx,'GAUSS_NEWTON') )
+                    error(['With CONVEX_OVER_NONLINEAR cost type, possible Hessian approximations are:' 10 ...
+                        'GAUSS_NEWTON or EXACT with exact_hess_cost == false.']);
+                end
             end
+        end
 
-            % terminal
+        function make_consistent_cost_terminal(self, terminal_node_relevant)
+            cost = self.cost;
+            dims = self.dims;
+            model = self.model;
+
             if strcmp(cost.cost_type_e, 'LINEAR_LS')
                 if ~isempty(cost.W_e) && ~isempty(cost.Vx_e)
                     ny_e = length(cost.W_e);
                     if isempty(cost.yref_e)
-                        warning(['yref_e not defined provided.' 10 'Using zeros(ny_e,1) by default.']);
+                        if terminal_node_relevant
+                            warning(['yref_e not defined provided.' 10 'Using zeros(ny_e,1) by default.']);
+                        end
                         self.cost.yref_e = zeros(ny_e,1);
                     end
                     if ny_e ~= size(cost.Vx_e, 1) || ny_e ~= size(cost.yref_e, 1)
@@ -225,7 +265,9 @@ classdef AcadosOcp < handle
                     end
                 elseif ~~isempty(cost.W_e) && ~~isempty(cost.Vx_e)
                     ny_e = 0;
-                    warning('Fields W_e and Vx_e not provided. Using empty ls terminal cost.')
+                    if terminal_node_relevant
+                        warning('Fields W_e and Vx_e not provided. Using empty ls terminal cost.')
+                    end
                 else
                     error('setting linear least square cost: need W_e, Vx_e, at least one missing.')
                 end
@@ -234,7 +276,9 @@ classdef AcadosOcp < handle
                 if ~isempty(cost.W_e) && ~isempty(model.cost_y_expr_e)
                     ny_e = length(cost.W_e);
                     if isempty(cost.yref_e)
-                        warning(['yref_e not defined provided.' 10 'Using zeros(ny_e,1) by default.']);
+                        if terminal_node_relevant
+                            warning(['yref_e not defined provided.' 10 'Using zeros(ny_e,1) by default.']);
+                        end
                         self.cost.yref_e = zeros(ny_e,1);
                     end
                     if ny_e ~= length(model.cost_y_expr_e) || ny_e ~= size(cost.yref_e, 1)
@@ -244,25 +288,55 @@ classdef AcadosOcp < handle
                     error('setting nonlinear least square cost: need W_e, cost_y_expr_e, at least one missing.')
                 end
                 dims.ny_e = ny_e;
+            elseif strcmp(cost.cost_type_e, 'CONVEX_OVER_NONLINEAR')
+                if isempty(model.cost_y_expr_e)
+                    error('cost_y_expr_e not provided for CONVEX_OVER_NONLINEAR terminal cost.');
+                end
+                try
+                    ny_e = length(model.cost_y_expr_e);
+                catch
+                    ny_e = numel(model.cost_y_expr_e);
+                end
+                if isempty(model.cost_r_in_psi_expr_e) || length(model.cost_r_in_psi_expr_e) ~= ny_e
+                    error('inconsistent dimension ny_e: regarding cost_y_expr_e and cost_r_in_psi_expr_e.');
+                end
+                if isempty(model.cost_psi_expr_e) || length(model.cost_psi_expr_e) ~= 1
+                    error('cost_psi_expr_e not provided or not scalar-valued.');
+                end
+                if isempty(cost.yref_e)
+                    if terminal_node_relevant
+                        warning(['yref_e not defined provided.' 10 'Using zeros(ny_e,1) by default.']);
+                    end
+                    self.cost.yref_e = zeros(ny_e,1);
+                end
+                if size(cost.yref_e,1) ~= ny_e
+                    error('inconsistent dimension: regarding yref_e and cost_y_expr_e, cost_r_in_psi_expr_e.');
+                end
+                dims.ny_e = ny_e;
+                opts = self.solver_options;
+                if ~( (strcmp(opts.hessian_approx,'EXACT') && opts.exact_hess_cost == false) || strcmp(opts.hessian_approx,'GAUSS_NEWTON') )
+                    error(['With CONVEX_OVER_NONLINEAR cost type, possible Hessian approximations are:' 10 ...
+                        'GAUSS_NEWTON or EXACT with exact_hess_cost == false.']);
+                end
+            end
+        end
+
+        function make_consistent_constraints_initial(self)
+            dims = self.dims;
+            constraints = self.constraints;
+            model = self.model;
+            if self.solver_options.N_horizon == 0
+                dims.nbxe_0 = 0;
+                return
             end
 
-            % cost integration
-            if strcmp(opts.cost_discretization, "INTEGRATOR")
-                if ~(strcmp(cost.cost_type, "NONLINEAR_LS") || strcmp(cost.cost_type, "CONVEX_OVER_NONLINEAR"))
-                    error('INTEGRATOR cost discretization requires CONVEX_OVER_NONLINEAR or NONLINEAR_LS cost type for path cost.')
-                end
-                if ~(strcmp(cost.cost_type_0, "NONLINEAR_LS") || strcmp(cost.cost_type_0, "CONVEX_OVER_NONLINEAR"))
-                    error('INTEGRATOR cost discretization requires CONVEX_OVER_NONLINEAR or NONLINEAR_LS cost type for initial cost.')
-                end
-            end
-
-
-            %% constraints
-            % initial
             if ~isempty(constraints.idxbx_0) && ~isempty(constraints.lbx_0) && ~isempty(constraints.ubx_0)
                 nbx_0 = length(constraints.lbx_0);
                 if nbx_0 ~= length(constraints.ubx_0) || nbx_0 ~= length(constraints.idxbx_0)
                     error('inconsistent dimension nbx_0, regarding idxbx_0, lbx_0, ubx_0.');
+                end
+                if min(constraints.idxbx_0) < 0 || max(constraints.idxbx_0) > (dims.nx-1)
+                    error(['idxbx_0 should contain (zero-based) indices between 0 and ', num2str(dims.nx-1)])
                 end
             elseif ~isempty(constraints.idxbx_0) || ~isempty(constraints.lbx_0) || ~isempty(constraints.ubx_0)
                 error('setting bounds on x: need idxbx_0, lbx_0, ubx_0, at least one missing.');
@@ -275,11 +349,36 @@ classdef AcadosOcp < handle
 
             dims.nbxe_0 = length(constraints.idxbxe_0);
 
-            % path
+            if ~isempty(model.con_h_expr_0) && ...
+               ~isempty(constraints.lh_0) && ~isempty(constraints.uh_0)
+                nh_0 = length(constraints.lh_0);
+                if nh_0 ~= length(constraints.uh_0) || nh_0 ~= length(model.con_h_expr_0)
+                    error('inconsistent dimension nh_0, regarding expr_h_0, lh_0, uh_0.');
+                end
+            elseif ~isempty(model.con_h_expr_0) || ...
+                   ~isempty(constraints.lh_0) || ~isempty(constraints.uh_0)
+                error('setting external constraint function h: need expr_h_0, lh_0, uh_0 at least one missing.');
+            else
+                nh_0 = 0;
+            end
+            dims.nh_0 = nh_0;
+        end
+
+        function make_consistent_constraints_path(self)
+            dims = self.dims;
+            constraints = self.constraints;
+            model = self.model;
+            if self.solver_options.N_horizon == 0
+                return
+            end
+
             if ~isempty(constraints.idxbx) && ~isempty(constraints.lbx) && ~isempty(constraints.ubx)
                 nbx = length(constraints.lbx);
                 if nbx ~= length(constraints.ubx) || nbx ~= length(constraints.idxbx)
                     error('inconsistent dimension nbx, regarding idxbx, lbx, ubx.');
+                end
+                if min(constraints.idxbx) < 0 || max(constraints.idxbx) > (dims.nx-1)
+                    error(['idxbx should contain (zero-based) indices between 0 and ', num2str(dims.nx-1)])
                 end
             elseif ~isempty(constraints.idxbx) || ~isempty(constraints.lbx) || ~isempty(constraints.ubx)
                 error('setting bounds on x: need idxbx, lbx, ubx, at least one missing.');
@@ -292,6 +391,9 @@ classdef AcadosOcp < handle
                 nbu = length(constraints.lbu);
                 if nbu ~= length(constraints.ubu) || nbu ~= length(constraints.idxbu)
                     error('inconsistent dimension nbu, regarding idxbu, lbu, ubu.');
+                end
+                if min(constraints.idxbu) < 0 || max(constraints.idxbu) > (dims.nu-1)
+                    error(['idxbu should contain (zero-based) indices between 0 and ', num2str(dims.nu-1)])
                 end
             elseif ~isempty(constraints.idxbu) || ~isempty(constraints.lbu) || ~isempty(constraints.ubu)
                 error('setting bounds on u: need idxbu, lbu, ubu, at least one missing.');
@@ -315,7 +417,7 @@ classdef AcadosOcp < handle
             dims.ng = ng;
 
             if ~isempty(model.con_h_expr) && ...
-                     ~isempty(constraints.lh) && ~isempty(constraints.uh)
+               ~isempty(constraints.lh) && ~isempty(constraints.uh)
                 nh = length(constraints.lh);
                 if nh ~= length(constraints.uh) || nh ~= length(model.con_h_expr)
                     error('inconsistent dimension nh, regarding expr_h, lh, uh.');
@@ -327,26 +429,20 @@ classdef AcadosOcp < handle
                 nh = 0;
             end
             dims.nh = nh;
+        end
 
-            if ~isempty(model.con_h_expr_0) && ...
-                    ~isempty(constraints.lh_0) && ~isempty(constraints.uh_0)
-            nh_0 = length(constraints.lh_0);
-            if nh_0 ~= length(constraints.uh_0) || nh_0 ~= length(model.con_h_expr_0)
-                error('inconsistent dimension nh_0, regarding expr_h_0, lh_0, uh_0.');
-            end
-            elseif ~isempty(model.con_h_expr_0) || ...
-                ~isempty(constraints.lh_0) || ~isempty(constraints.uh_0)
-            error('setting external constraint function h: need expr_h_0, lh_0, uh_0 at least one missing.');
-            else
-                nh_0 = 0;
-            end
-            dims.nh_0 = nh_0;
+        function make_consistent_constraints_terminal(self)
+            dims = self.dims;
+            constraints = self.constraints;
+            model = self.model;
 
-            % terminal
             if ~isempty(constraints.idxbx_e) && ~isempty(constraints.lbx_e) && ~isempty(constraints.ubx_e)
                 nbx_e = length(constraints.lbx_e);
                 if nbx_e ~= length(constraints.ubx_e) || nbx_e ~= length(constraints.idxbx_e)
                     error('inconsistent dimension nbx_e, regarding Jbx_e, lbx_e, ubx_e.');
+                end
+                if min(constraints.idxbx_e) < 0 || max(constraints.idxbx_e) > (dims.nx-1)
+                    error(['idxbx_e should contain (zero-based) indices between 0 and ', num2str(dims.nx-1)])
                 end
             elseif ~isempty(constraints.idxbx_e) || ~isempty(constraints.lbx_e) || ~isempty(constraints.ubx_e)
                 error('setting bounds on x: need Jbx_e, lbx_e, ubx_e, at least one missing.');
@@ -370,7 +466,7 @@ classdef AcadosOcp < handle
             dims.ng_e = ng_e;
 
             if ~isempty(model.con_h_expr_e) && ...
-                     ~isempty(constraints.lh_e) && ~isempty(constraints.uh_e)
+               ~isempty(constraints.lh_e) && ~isempty(constraints.uh_e)
                 nh_e = length(constraints.lh_e);
                 if nh_e ~= length(constraints.uh_e) || nh_e ~= length(model.con_h_expr_e)
                     error('inconsistent dimension nh_e, regarding expr_h_e, lh_e, uh_e.');
@@ -382,13 +478,127 @@ classdef AcadosOcp < handle
                 nh_e = 0;
             end
             dims.nh_e = nh_e;
+        end
 
-            %% slack dimensions
+        function make_consistent_slacks_rev_path(self)
+            constraints = self.constraints;
+            dims = self.dims;
+            opts = self.solver_options;
+            cost = self.cost;
+
+            if opts.N_horizon == 0
+                return
+            end
+
+            % constraints that are not slack bounds
+            ni_no_s = dims.nbu + dims.nbx + dims.nh + dims.ng + dims.nphi;
+
+            % sanity checks
+            if length(constraints.idxs_rev) ~= ni_no_s
+                error(['inconsistent dimension idxs_rev = ', num2str(length(constraints.idxs_rev)), ...
+                    '. Should be equal to ni_no_s = ', num2str(ni_no_s), '.']);
+            end
+            possible_vals = -1:(ni_no_s-1);
+            if any(~ismember(constraints.idxs_rev, possible_vals))
+                error(['idxs_rev = [', num2str(constraints.idxs_rev(:).'), ...
+                    '] contains value not in range -1:', num2str(ni_no_s-1), '.']);
+            end
+
+            ns = ns_from_idxs_rev(constraints.idxs_rev);
+
+            % slack bounds
+            if isempty(constraints.ls)
+                constraints.ls = zeros(ns, 1);
+            elseif length(constraints.ls) ~= ns
+                error('inconsistent dimension ns, regarding idxs_rev, ls.');
+            end
+            if isempty(constraints.us)
+                constraints.us = zeros(ns, 1);
+            elseif length(constraints.us) ~= ns
+                error('inconsistent dimension ns, regarding idxs_rev, us.');
+            end
+
+            % check cost penalty
+            fields = {'Zl', 'Zu', 'zl', 'zu'};
+            for i = 1:length(fields)
+                field = fields{i};
+                dim = size(cost.(field), 1);
+                if dim ~= ns
+                    error(['Inconsistent size for field ', field, ', with dimension ', num2str(dim), ...
+                        ', Detected ns = ', num2str(ns), '.']);
+                end
+            end
+
+            dims.ns = ns;
+        end
+
+        function make_consistent_slacks_path(self)
+            constraints = self.constraints;
+            dims = self.dims;
+            cost = self.cost;
+            if self.solver_options.N_horizon == 0
+                return
+            end
+
+            nbx = dims.nbx;
             nsbx = length(constraints.idxsbx);
+            if nsbx > nbx
+                error(['inconsistent dimension nsbx = ', num2str(nsbx), '. Is greater than nbx = ', num2str(nbx), '.']);
+            end
+            if any(constraints.idxsbx >= nbx)
+                error(['idxsbx = [', num2str(constraints.idxsbx(:).'), '] contains value >= nbx = ', num2str(nbx), '.']);
+            end
+            if any(constraints.idxsbx < 0)
+                error(['idxsbx = [', num2str(constraints.idxsbx(:).'), '] contains value < 0.']);
+            end
+
             nsbu = length(constraints.idxsbu);
+            nbu = dims.nbu;
+            if nsbu > nbu
+                error(['inconsistent dimension nsbu = ', num2str(nsbu), '. Is greater than nbu = ', num2str(nbu), '.']);
+            end
+            if any(constraints.idxsbu >= nbu)
+                error(['idxsbu = [', num2str(constraints.idxsbu(:).'), '] contains value >= nbu = ', num2str(nbu), '.']);
+            end
+            if any(constraints.idxsbu < 0)
+                error(['idxsbu = [', num2str(constraints.idxsbu(:).'), '] contains value < 0.']);
+            end
+
             nsg = length(constraints.idxsg);
+            ng = dims.ng;
+            if nsg > ng
+                error(['inconsistent dimension nsg = ', num2str(nsg), '. Is greater than ng = ', num2str(ng), '.']);
+            end
+            if any(constraints.idxsg >= ng)
+                error(['idxsg = [', num2str(constraints.idxsg(:).'), '] contains value >= ng = ', num2str(ng), '.']);
+            end
+            if any(constraints.idxsg < 0)
+                error(['idxsg = [', num2str(constraints.idxsg(:).'), '] contains value < 0.']);
+            end
+
             nsh = length(constraints.idxsh);
+            nh = dims.nh;
+            if nsh > nh
+                error(['inconsistent dimension nsh = ', num2str(nsh), '. Is greater than nh = ', num2str(nh), '.']);
+            end
+            if any(constraints.idxsh >= nh)
+                error(['idxsh = [', num2str(constraints.idxsh(:).'), '] contains value >= nh = ', num2str(nh), '.']);
+            end
+            if any(constraints.idxsh < 0)
+                error(['idxsh = [', num2str(constraints.idxsh(:).'), '] contains value < 0.']);
+            end
+
             nsphi = length(constraints.idxsphi);
+            nphi = dims.nphi;
+            if nsphi > nphi
+                error(['inconsistent dimension nsphi = ', num2str(nsphi), '. Is greater than nphi = ', num2str(nphi), '.']);
+            end
+            if any(constraints.idxsphi >= nphi)
+                error(['idxsphi = [', num2str(constraints.idxsphi(:).'), '] contains value >= nphi = ', num2str(nphi), '.']);
+            end
+            if any(constraints.idxsphi < 0)
+                error(['idxsphi = [', num2str(constraints.idxsphi(:).'), '] contains value < 0.']);
+            end
 
             ns = nsbx + nsbu + nsg + nsh + nsphi;
             wrong_field = '';
@@ -435,10 +645,92 @@ classdef AcadosOcp < handle
             dims.nsg = nsg;
             dims.nsh = nsh;
             dims.nsphi = nsphi;
+        end
 
-            % slacks at initial stage
+        function make_consistent_slacks_rev_initial(self)
+            constraints = self.constraints;
+            dims = self.dims;
+            opts = self.solver_options;
+            cost = self.cost;
+            if opts.N_horizon == 0
+                return
+            end
+
+            % constraints that are not slack bounds
+            ni_no_s = dims.nbu + dims.nbx_0 + dims.nh_0 + dims.ng + dims.nphi_0;
+
+            % sanity checks
+            if length(constraints.idxs_rev_0) ~= ni_no_s
+                error(['inconsistent dimension idxs_rev_0 = ', num2str(length(constraints.idxs_rev_0)), ...
+                    '. Should be equal to ni_no_s = ', num2str(ni_no_s), '.']);
+            end
+            possible_vals = -1:(ni_no_s-1);
+            if any(~ismember(constraints.idxs_rev_0, possible_vals))
+                error(['idxs_rev_0 = [', num2str(constraints.idxs_rev_0(:).'), ...
+                    '] contains value not in range -1:', num2str(ni_no_s-1), '.']);
+            end
+
+            ns_0 = ns_from_idxs_rev(constraints.idxs_rev_0);
+
+            % slack bounds
+            if isempty(constraints.ls_0)
+                constraints.ls_0 = zeros(ns_0, 1);
+            elseif length(constraints.ls_0) ~= ns_0
+                error('inconsistent dimension ns_0, regarding idxs_rev_0, ls_0.');
+            end
+            if isempty(constraints.us_0)
+                constraints.us_0 = zeros(ns_0, 1);
+            elseif length(constraints.us_0) ~= ns_0
+                error('inconsistent dimension ns_0, regarding idxs_rev_0, us_0.');
+            end
+
+            % check cost penalty
+            fields = {'Zl_0', 'Zu_0', 'zl_0', 'zu_0'};
+            for i = 1:length(fields)
+                field = fields{i};
+                dim = size(cost.(field), 1);
+                if dim ~= ns_0
+                    error(['Inconsistent size for field ', field, ', with dimension ', num2str(dim), ...
+                        ', Detected ns_0 = ', num2str(ns_0), '.']);
+                end
+            end
+
+            dims.ns_0 = ns_0;
+        end
+
+        function make_consistent_slacks_initial(self)
+            constraints = self.constraints;
+            dims = self.dims;
+            cost = self.cost;
+            nsbu = dims.nsbu;
+            nsg = dims.nsg;
+            if self.solver_options.N_horizon == 0
+                return
+            end
+
+            nh_0 = dims.nh_0;
             nsh_0 = length(constraints.idxsh_0);
+            if nsh_0 > nh_0
+                error(['inconsistent dimension nsh_0 = ', num2str(nsh_0), '. Is greater than nh_0 = ', num2str(nh_0), '.']);
+            end
+            if any(constraints.idxsh_0 >= nh_0)
+                error(['idxsh_0 = [', num2str(constraints.idxsh_0(:).'), '] contains value >= nh_0 = ', num2str(nh_0), '.']);
+            end
+            if any(constraints.idxsh_0 < 0)
+                error(['idxsh_0 = [', num2str(constraints.idxsh_0(:).'), '] contains value < 0.']);
+            end
+
+            nphi_0 = dims.nphi_0;
             nsphi_0 = length(constraints.idxsphi_0);
+            if nsphi_0 > nphi_0
+                error(['inconsistent dimension nsphi_0 = ', num2str(nsphi_0), '. Is greater than nphi_0 = ', num2str(nphi_0), '.']);
+            end
+            if any(constraints.idxsphi_0 >= nphi_0)
+                error(['idxsphi_0 = [', num2str(constraints.idxsphi_0(:).'), '] contains value >= nphi_0 = ', num2str(nphi_0), '.']);
+            end
+            if any(constraints.idxsphi_0 < 0)
+                error(['idxsphi_0 = [', num2str(constraints.idxsphi_0(:).'), '] contains value < 0.']);
+            end
 
             ns_0 = nsbu + nsg + nsh_0 + nsphi_0;
             wrong_field = '';
@@ -463,7 +755,7 @@ classdef AcadosOcp < handle
             end
 
             if ~strcmp(wrong_field, '')
-                error(['Inconsistent size for field', wrong_field, ' with dimension ', num2str(dim),...
+                error(['Inconsistent size for field ', wrong_field, ' with dimension ', num2str(dim),...
                         '. Detected ns_0 = ', num2str(ns_0), ' = nsbu + nsg + nsh_0 + nsphi_0.',...
                         ' With nsg = ', num2str(nsg), ' nsh_0 = ', num2str(nsh_0), ', nsphi_0 = ', num2str(nsphi_0), '.'])
             end
@@ -476,12 +768,110 @@ classdef AcadosOcp < handle
             dims.ns_0 = ns_0;
             dims.nsh_0 = nsh_0;
             dims.nsphi_0 = nsphi_0;
+        end
 
-            %% terminal slack dimensions
+        function make_consistent_slacks_rev_terminal(self)
+            constraints = self.constraints;
+            dims = self.dims;
+            cost = self.cost;
+
+            % constraints that are not slack bounds
+            ni_no_s = dims.nbx_e + dims.nh_e + dims.ng_e + dims.nphi_e;
+
+            % sanity checks
+            if length(constraints.idxs_rev_e) ~= ni_no_s
+                error(['inconsistent dimension idxs_rev_e = ', num2str(length(constraints.idxs_rev_e)), ...
+                    '. Should be equal to ni_no_s = ', num2str(ni_no_s), '.']);
+            end
+            possible_vals = -1:(ni_no_s-1);
+            if any(~ismember(constraints.idxs_rev_e, possible_vals))
+                error(['idxs_rev_e = [', num2str(constraints.idxs_rev_e(:).'), ...
+                    '] contains value not in range -1:', num2str(ni_no_s-1), '.']);
+            end
+
+            ns_e = ns_from_idxs_rev(constraints.idxs_rev_e);
+
+            % slack bounds
+            if isempty(constraints.ls_e)
+                constraints.ls_e = zeros(ns_e, 1);
+            elseif length(constraints.ls_e) ~= ns_e
+                error('inconsistent dimension ns_e, regarding idxs_rev_e, ls_e.');
+            end
+            if isempty(constraints.us_e)
+                constraints.us_e = zeros(ns_e, 1);
+            elseif length(constraints.us_e) ~= ns_e
+                error('inconsistent dimension ns_e, regarding idxs_rev_e, us_e.');
+            end
+
+            % check cost penalty
+            fields = {'Zl_e', 'Zu_e', 'zl_e', 'zu_e'};
+            for i = 1:length(fields)
+                field = fields{i};
+                dim = size(cost.(field), 1);
+                if dim ~= ns_e
+                    error(['Inconsistent size for field ', field, ', with dimension ', num2str(dim), ...
+                        ', Detected ns_e = ', num2str(ns_e), '.']);
+                end
+            end
+
+            dims.ns_e = ns_e;
+        end
+
+
+        function make_consistent_slacks_terminal(self)
+            constraints = self.constraints;
+            dims = self.dims;
+            cost = self.cost;
+
+            nbx_e = dims.nbx_e;
             nsbx_e = length(constraints.idxsbx_e);
+            if nsbx_e > nbx_e
+                error(['inconsistent dimension nsbx_e = ', num2str(nsbx_e), '. Is greater than nbx_e = ', num2str(nbx_e), '.']);
+            end
+            if any(constraints.idxsbx_e >= nbx_e)
+                error(['idxsbx_e = [', num2str(constraints.idxsbx_e(:).'), '] contains value >= nbx_e = ', num2str(nbx_e), '.']);
+            end
+            if any(constraints.idxsbx_e < 0)
+                error(['idxsbx_e = [', num2str(constraints.idxsbx_e(:).'), '] contains value < 0.']);
+            end
+
+            ng_e = dims.ng_e;
             nsg_e = length(constraints.idxsg_e);
+            if nsg_e > ng_e
+                error(['inconsistent dimension nsg_e = ', num2str(nsg_e), '. Is greater than ng_e = ', num2str(ng_e), '.']);
+            end
+            if any(constraints.idxsg_e >= ng_e)
+                error(['idxsg_e = [', num2str(constraints.idxsg_e(:).'), '] contains value >= ng_e = ', num2str(ng_e), '.']);
+            end
+            if any(constraints.idxsg_e < 0)
+                error(['idxsg_e = [', num2str(constraints.idxsg_e(:).'), '] contains value < 0.']);
+            end
+
+            nh_e = dims.nh_e;
             nsh_e = length(constraints.idxsh_e);
+            if nsh_e > nh_e
+                error(['inconsistent dimension nsh_e = ', num2str(nsh_e), '. Is greater than nh_e = ', num2str(nh_e), '.']);
+            end
+            if any(constraints.idxsh_e >= nh_e)
+                error(['idxsh_e = [', num2str(constraints.idxsh_e(:).'), '] contains value >= nh_e = ', num2str(nh_e), '.']);
+            end
+            if any(constraints.idxsh_e < 0)
+                error(['idxsh_e = [', num2str(constraints.idxsh_e(:).'), '] contains value < 0.']);
+            end
+
+
+            nphi_e = dims.nphi_e;
             nsphi_e = length(constraints.idxsphi_e);
+            if nsphi_e > nphi_e
+                error(['inconsistent dimension nsphi_e = ', num2str(nsphi_e), '. Is greater than nphi_e = ', num2str(nphi_e), '.']);
+            end
+            if any(constraints.idxsphi_e >= nphi_e)
+                error(['idxsphi_e = [', num2str(constraints.idxsphi_e(:).'), '] contains value >= nphi_e = ', num2str(nphi_e), '.']);
+            end
+            if any(constraints.idxsphi_e < 0)
+                error(['idxsphi_e = [', num2str(constraints.idxsphi_e(:).'), '] contains value < 0.']);
+            end
+
 
             ns_e = nsbx_e + nsg_e + nsh_e + nsphi_e;
             wrong_field = '';
@@ -506,7 +896,7 @@ classdef AcadosOcp < handle
             end
 
             if ~strcmp(wrong_field, '')
-                error(['Inconsistent size for field', wrong_field, ' with dimension ', num2str(dim),...
+                error(['Inconsistent size for field ', wrong_field, ' with dimension ', num2str(dim),...
                         '. Detected ns_e = ', num2str(ns_e), ' = nsbx_e + nsg_e + nsh_e + nsphi_e.',...
                         ' With nsbx_e = ', num2str(nsbx_e), ' nsg_e = ', num2str(nsg_e),...
                         ' nsh_e = ', num2str(nsh_e), ', nsphi_e = ', num2str(nsphi_e), '.'])
@@ -526,32 +916,27 @@ classdef AcadosOcp < handle
             dims.nsh_e = nsh_e;
             dims.nsphi_e = nsphi_e;
 
-            % shooting nodes -> time_steps
-            % discretization
-            if isempty(opts.N_horizon) && isempty(dims.N)
-                error('N_horizon not provided.');
-            elseif isempty(opts.N_horizon) && ~isempty(dims.N)
-                opts.N_horizon = dims.N;
-                disp(['field AcadosOcpDims.N has been migrated to AcadosOcpOptions.N_horizon.',...
-                      ' setting AcadosOcpOptions.N_horizon = N.',...
-                      ' For future comppatibility, please use AcadosOcpOptions.N_horizon directly.']);
-            elseif ~isempty(opts.N_horizon) && ~isempty(dims.N) && opts.N_horizon ~= dims.N
-                error(['Inconsistent dimension N, regarding N = ', num2str(dims.N),...
-                       ', N_horizon = ', num2str(opts.N_horizon), '.']);
-            else
-                dims.N = opts.N_horizon;
+        end
+
+        function make_consistent_discretization(self)
+            dims = self.dims;
+            opts = self.solver_options;
+
+            if opts.N_horizon == 0
+                opts.shooting_nodes = zeros(1, 1);
+                opts.time_steps = ones(1, 1);
+                return
             end
-            N = opts.N_horizon;
 
             if length(opts.tf) ~= 1 || opts.tf < 0
                 error('time horizon tf should be a nonnegative number');
             end
 
             if ~isempty(opts.shooting_nodes)
-                if N + 1 ~= length(opts.shooting_nodes)
+                if opts.N_horizon + 1 ~= length(opts.shooting_nodes)
                     error('inconsistent dimension N regarding shooting nodes.');
                 end
-                for i=1:N
+                for i=1:opts.N_horizon
                     opts.time_steps(i) = opts.shooting_nodes(i+1) - opts.shooting_nodes(i);
                 end
                 sum_time_steps = sum(opts.time_steps);
@@ -560,7 +945,7 @@ classdef AcadosOcp < handle
                     opts.time_steps = opts.time_steps * opts.tf / sum_time_steps;
                 end
             elseif ~isempty(opts.time_steps)
-                if N ~= length(opts.time_steps)
+                if opts.N_horizon ~= length(opts.time_steps)
                     error('inconsistent dimension N regarding time steps.');
                 end
                 sum_time_steps = sum(opts.time_steps);
@@ -569,12 +954,12 @@ classdef AcadosOcp < handle
                         'got tf = ' num2str(opts.tf) '; sum(time_steps) = ' num2str(sum_time_steps) '.']);
                 end
             else
-                opts.time_steps = opts.tf/N * ones(N,1);
+                opts.time_steps = opts.tf/opts.N_horizon * ones(opts.N_horizon,1);
             end
             % add consistent shooting_nodes e.g. for plotting;
             if isempty(opts.shooting_nodes)
-                opts.shooting_nodes = zeros(N+1, 1);
-                for i = 1:N
+                opts.shooting_nodes = zeros(opts.N_horizon+1, 1);
+                for i = 1:opts.N_horizon
                     opts.shooting_nodes(i+1) = sum(opts.time_steps(1:i));
                 end
             end
@@ -582,12 +967,12 @@ classdef AcadosOcp < handle
                 error(['ocp discretization: time_steps between shooting nodes must all be > 0', ...
                     ' got: ' num2str(opts.time_steps)])
             end
+        end
 
-            % cost_scaling
-            if isempty(opts.cost_scaling)
-                opts.cost_scaling = [opts.time_steps(:); 1.0];
-            elseif length(opts.cost_scaling) ~= N+1
-                error(['cost_scaling must have length N+1 = ', num2str(N+1)]);
+        function make_consistent_simulation(self)
+            opts = self.solver_options;
+            if opts.N_horizon == 0
+                return
             end
 
             % set integrator time automatically
@@ -602,28 +987,302 @@ classdef AcadosOcp < handle
                 end
             end
 
-            % qpdunes
-            if ~isempty(strfind(opts.qp_solver,'qpdunes'))
-                constraints.idxbxe_0 = [];
-                dims.nbxe_0 = 0;
-            end
-
             %% options sanity checks
             if length(opts.sim_method_num_steps) == 1
-                opts.sim_method_num_steps = opts.sim_method_num_steps * ones(1, N);
-            elseif length(opts.sim_method_num_steps) ~= N
+                opts.sim_method_num_steps = opts.sim_method_num_steps * ones(1, opts.N_horizon);
+            elseif length(opts.sim_method_num_steps) ~= opts.N_horizon
                 error('sim_method_num_steps must be a scalar or a vector of length N');
             end
             if length(opts.sim_method_num_stages) == 1
-                opts.sim_method_num_stages = opts.sim_method_num_stages * ones(1, N);
-            elseif length(opts.sim_method_num_stages) ~= N
+                opts.sim_method_num_stages = opts.sim_method_num_stages * ones(1, opts.N_horizon);
+            elseif length(opts.sim_method_num_stages) ~= opts.N_horizon
                 error('sim_method_num_stages must be a scalar or a vector of length N');
             end
             if length(opts.sim_method_jac_reuse) == 1
-                opts.sim_method_jac_reuse = opts.sim_method_jac_reuse * ones(1, N);
-            elseif length(opts.sim_method_jac_reuse) ~= N
+                opts.sim_method_jac_reuse = opts.sim_method_jac_reuse * ones(1, opts.N_horizon);
+            elseif length(opts.sim_method_jac_reuse) ~= opts.N_horizon
                 error('sim_method_jac_reuse must be a scalar or a vector of length N');
             end
+
+
+        end
+
+        function make_consistent(self, mocp_info)
+            % mocp_info: struct with info about multi-phase OCP
+            if nargin < 2
+                mocp_info = [];
+            end
+            self.model.make_consistent(self.dims);
+
+            model = self.model;
+            dims = self.dims;
+            cost = self.cost;
+            constraints = self.constraints;
+            opts = self.solver_options;
+
+            self.detect_cost_and_constraints(mocp_info);
+
+            if isempty(opts.N_horizon) && isempty(dims.N)
+                error('N_horizon not provided.');
+            elseif isempty(opts.N_horizon) && ~isempty(dims.N)
+                opts.N_horizon = dims.N;
+                disp(['field AcadosOcpDims.N has been migrated to AcadosOcpOptions.N_horizon.',...
+                      ' setting AcadosOcpOptions.N_horizon = N.',...
+                      ' For future comppatibility, please use AcadosOcpOptions.N_horizon directly.']);
+            elseif ~isempty(opts.N_horizon) && ~isempty(dims.N) && opts.N_horizon ~= dims.N
+                error(['Inconsistent dimension N, regarding N = ', num2str(dims.N),...
+                       ', N_horizon = ', num2str(opts.N_horizon), '.']);
+            else
+                dims.N = opts.N_horizon;
+            end
+
+            % check if nx != nx_next
+            if dims.nx ~= dims.nx_next && ...
+                ( (isempty(mocp_info) && opts.N_horizon > 1) || (~isempty(mocp_info) && mocp_info.N_list(mocp_info.phase_idx+1) > 1) )
+                error(['nx_next = ', num2str(dims.nx_next), ' must be equal to nx = ', num2str(dims.nx), ' if more than one shooting interval is used.']);
+            end
+
+            % detect GNSF structure
+            if strcmp(opts.integrator_type, 'GNSF') && opts.N_horizon > 0
+                if dims.gnsf_nx1 + dims.gnsf_nx2 ~= dims.nx
+                    % TODO: properly interface those.
+                    gnsf_transcription_opts = struct();
+                    detect_gnsf_structure(model, dims, gnsf_transcription_opts);
+                else
+                    warning('No GNSF model detected, assuming all required fields are set.')
+                end
+            end
+
+            % sanity checks on options, which are done in setters in Python
+            qp_solvers = {'PARTIAL_CONDENSING_HPIPM', 'FULL_CONDENSING_QPOASES', 'FULL_CONDENSING_HPIPM', 'PARTIAL_CONDENSING_QPDUNES', 'PARTIAL_CONDENSING_OSQP', 'FULL_CONDENSING_DAQP'};
+            if ~ismember(opts.qp_solver, qp_solvers)
+                error(['Invalid qp_solver: ', opts.qp_solver, '. Available options are: ', strjoin(qp_solvers, ', ')]);
+            end
+
+            regularize_methods = {'NO_REGULARIZE', 'MIRROR', 'PROJECT', 'PROJECT_REDUC_HESS', 'CONVEXIFY', 'GERSHGORIN_LEVENBERG_MARQUARDT'};
+            if ~ismember(opts.regularize_method, regularize_methods)
+                error(['Invalid regularize_method: ', opts.regularize_method, '. Available options are: ', strjoin(regularize_methods, ', ')]);
+            end
+            hpipm_modes = {'BALANCE', 'SPEED_ABS', 'SPEED', 'ROBUST'};
+            if ~ismember(opts.hpipm_mode, hpipm_modes)
+                error(['Invalid hpipm_mode: ', opts.hpipm_mode, '. Available options are: ', strjoin(hpipm_modes, ', ')]);
+            end
+            INTEGRATOR_TYPES = {'ERK', 'IRK', 'GNSF', 'DISCRETE', 'LIFTED_IRK'};
+            if ~ismember(opts.integrator_type, INTEGRATOR_TYPES)
+                error(['Invalid integrator_type: ', opts.integrator_type, '. Available options are: ', strjoin(INTEGRATOR_TYPES, ', ')]);
+            end
+
+            COLLOCATION_TYPES = {'GAUSS_RADAU_IIA', 'GAUSS_LEGENDRE', 'EXPLICIT_RUNGE_KUTTA'};
+            if ~ismember(opts.collocation_type, COLLOCATION_TYPES)
+                error(['Invalid collocation_type: ', opts.collocation_type, '. Available options are: ', strjoin(COLLOCATION_TYPES, ', ')]);
+            end
+
+            COST_DISCRETIZATION_TYPES = {'EULER', 'INTEGRATOR'};
+            if ~ismember(opts.cost_discretization, COST_DISCRETIZATION_TYPES)
+                error(['Invalid cost_discretization: ', opts.cost_discretization, '. Available options are: ', strjoin(COST_DISCRETIZATION_TYPES, ', ')]);
+            end
+
+            search_direction_modes = {'NOMINAL_QP', 'BYRD_OMOJOKUN', 'FEASIBILITY_QP'};
+            if ~ismember(opts.search_direction_mode, search_direction_modes)
+                error(['Invalid search_direction_mode: ', opts.search_direction_mode, '. Available options are: ', strjoin(search_direction_modes, ', ')]);
+            end
+
+            qpscaling_scale_constraints_types = {'INF_NORM', 'NO_CONSTRAINT_SCALING'};
+            if ~ismember(opts.qpscaling_scale_constraints, qpscaling_scale_constraints_types)
+                error(['Invalid qpscaling_scale_constraints: ', opts.qpscaling_scale_constraints, '. Available options are: ', strjoin(qpscaling_scale_constraints_types, ', ')]);
+            end
+
+            qpscaling_scale_objective_types = {'OBJECTIVE_GERSHGORIN', 'NO_OBJECTIVE_SCALING'};
+            if ~ismember(opts.qpscaling_scale_objective, qpscaling_scale_objective_types)
+                error(['Invalid qpscaling_scale_objective: ', opts.qpscaling_scale_objective, '. Available options are: ', strjoin(qpscaling_scale_objective_types, ', ')]);
+            end
+
+            nlp_qp_tol_strategy_types = {'ADAPTIVE_CURRENT_RES_JOINT', 'ADAPTIVE_QPSCALING', 'FIXED_QP_TOL'};
+            if ~ismember(opts.nlp_qp_tol_strategy, nlp_qp_tol_strategy_types)
+                error(['Invalid nlp_qp_tol_strategy: ', opts.nlp_qp_tol_strategy, '. Available options are: ', strjoin(nlp_qp_tol_strategy_types, ', ')]);
+            end
+
+            % checks on values
+            if opts.nlp_qp_tol_reduction_factor < 0.0 || opts.nlp_qp_tol_reduction_factor > 1.0
+                error(['nlp_qp_tol_reduction_factor must be in [0, 1], got: ', num2str(opts.nlp_qp_tol_reduction_factor)]);
+            end
+
+            if opts.nlp_qp_tol_safety_factor < 0.0 || opts.nlp_qp_tol_safety_factor > 1.0
+                error(['nlp_qp_tol_safety_factor must be in [0, 1], got: ', num2str(opts.nlp_qp_tol_safety_factor)]);
+            end
+
+            if strcmp(opts.nlp_qp_tol_strategy, "ADAPTIVE_QPSCALING")
+                if strcmp(opts.qpscaling_scale_constraints, "NO_CONSTRAINT_SCALING") && strcmp(opts.qpscaling_scale_objective, "NO_OBJECTIVE_SCALING")
+                    error('ADAPTIVE_QPSCALING only makes sense if QP scaling is used.');
+                end
+            end
+
+            % RTI checks
+            if strcmp(opts.nlp_solver_type, 'SQP_RTI')
+                if ~strcmp(opts.nlp_qp_tol_strategy, 'FIXED_QP_TOL')
+                    error('SQP_RTI only supports FIXED_QP_TOL nlp_qp_tol_strategy.');
+                end
+            end
+            % OCP name
+            self.name = model.name;
+
+            % parameters
+            if isempty(self.parameter_values)
+                if dims.np > 0
+                    warning(['self.parameter_values are not set.', ...
+                            10 'Using zeros(np,1) by default.' 10 'You can update them later using set().']);
+                end
+                self.parameter_values = zeros(self.dims.np,1);
+            elseif length(self.parameter_values) ~= self.dims.np
+                error(['parameter_values has the wrong shape. Expected: ' num2str(self.dims.np)])
+            end
+
+
+            % parameters
+            if isempty(self.p_global_values)
+                if dims.np_global > 0
+                    warning(['self.p_global_values are not set.', ...
+                            10 'Using zeros(np_global,1) by default.' 10 'You can update them later using set().']);
+                end
+                self.p_global_values = zeros(self.dims.np_global,1);
+            elseif length(self.p_global_values) ~= self.dims.np_global
+                error(['p_global_values has the wrong shape. Expected: ' num2str(self.dims.np_global)])
+            end
+
+            %% cost
+            if isempty(mocp_info)
+                terminal_node_relevant = 1;
+                if opts.N_horizon > 0
+                    initial_node_relevant = 1;
+                else
+                    initial_node_relevant = 0;
+                end
+                if opts.N_horizon > 1
+                    path_nodes_relevant = 1;
+                else
+                    path_nodes_relevant = 0;
+                end                
+            else
+                % MOCP
+                if mocp_info.phase_idx == 0
+                    initial_node_relevant = 1;
+                else
+                    initial_node_relevant = 0;
+                end
+                if mocp_info.phase_idx == mocp_info.phase_idx == mocp_info.n_phases - 1
+                    terminal_node_relevant = 1;
+                else
+                    terminal_node_relevant = 0;
+                end
+                if mocp_info.N_list(mocp_info.phase_idx+1) > 1
+                    path_nodes_relevant = 1;
+                else
+                    path_nodes_relevant = 0;
+                end
+            end
+
+            
+            self.make_consistent_cost_initial(initial_node_relevant);
+            self.make_consistent_cost_path(path_nodes_relevant);
+            self.make_consistent_cost_terminal(terminal_node_relevant);
+
+            % cost integration
+            if strcmp(opts.cost_discretization, "INTEGRATOR") && opts.N_horizon > 0
+                if ~(strcmp(cost.cost_type, "NONLINEAR_LS") || strcmp(cost.cost_type, "CONVEX_OVER_NONLINEAR"))
+                    error('INTEGRATOR cost discretization requires CONVEX_OVER_NONLINEAR or NONLINEAR_LS cost type for path cost.')
+                end
+                if ~(strcmp(cost.cost_type_0, "NONLINEAR_LS") || strcmp(cost.cost_type_0, "CONVEX_OVER_NONLINEAR"))
+                    error('INTEGRATOR cost discretization requires CONVEX_OVER_NONLINEAR or NONLINEAR_LS cost type for initial cost.')
+                end
+                if strcmp(opts.nlp_solver_type, 'SQP_WITH_FEASIBLE_QP')
+                    error('cost_discretization == INTEGRATOR is not compatible with SQP_WITH_FEASIBLE_QP yet.')
+                end
+            end
+
+
+            %% constraints
+            % qpdunes
+            if ~isempty(strfind(opts.qp_solver, 'QPDUNES'))
+                constraints.idxbxe_0 = [];
+                dims.nbxe_0 = 0;
+            end
+            if isempty(mocp_info) || mocp_info.phase_idx == 0
+                self.make_consistent_constraints_initial();
+            end
+            self.make_consistent_constraints_path();
+            if isempty(mocp_info) || mocp_info.phase_idx == mocp_info.n_phases - 1
+                self.make_consistent_constraints_terminal();
+            end
+
+            % if idxs_rev formulation is used at initial or path, no idxs* should be defined
+            if ~isempty(constraints.idxs_rev_0) || ~isempty(constraints.idxs_rev)
+                idxs_names = {'idxsbx', 'idxsbu', 'idxsg', 'idxsh_0', 'idxsh', 'idxsphi_0', 'idxsphi'};
+                for i = 1:length(idxs_names)
+                    idxs_name = idxs_names{i};
+                    idxs_val = constraints.(idxs_name);
+                    if ~isempty(idxs_val)
+                        error(['Mixing idxs_rev and idxs_* formulations for initial and intermediate nodes is not supported. Found non empty idxs_rev or idxs_rev_0 and non empty ', idxs_name]);
+                    end
+                end
+            end
+
+            % Check idxs_rev formulation compatibility
+            if any([~isempty(constraints.idxs_rev_0), ~isempty(constraints.idxs_rev), ~isempty(constraints.idxs_rev_e)])
+                if isempty(strfind(opts.qp_solver, 'HPIPM'))
+                    error(['idxs_rev formulation is only supported with HPIPM QP solvers yet, got ', opts.qp_solver, '.']);
+                end
+                if strcmp(opts.nlp_solver_type, 'SQP_WITH_FEASIBLE_QP')
+                    error('idxs_rev formulation is not compatible with SQP_WITH_FEASIBLE_QP yet.');
+                end
+            end
+
+            %% slack dimensions
+            if isempty(constraints.idxs_rev)
+                self.make_consistent_slacks_path();
+            else
+                self.make_consistent_slacks_rev_path();
+            end
+
+            if isempty(constraints.idxs_rev_0)
+                self.make_consistent_slacks_initial();
+            else
+                self.make_consistent_slacks_rev_initial();
+            end
+
+            if isempty(constraints.idxs_rev_e)
+                self.make_consistent_slacks_terminal();
+            else
+                self.make_consistent_slacks_rev_terminal();
+            end
+
+            % check for ACADOS_INFTY
+            if ~ismember(opts.qp_solver, {'PARTIAL_CONDENSING_HPIPM', 'FULL_CONDENSING_HPIPM', 'FULL_CONDENSING_DAQP'})
+                ACADOS_INFTY = get_acados_infty();
+                % loop over all bound vectors
+                if opts.N_horizon > 0
+                    fields = {'lbx_e', 'ubx_e', 'lg_e', 'ug_e', 'lh_e', 'uh_e', 'lphi_e', 'uphi_e'};
+                else
+                    fields = {'lbx_0', 'ubx_0', 'lbx', 'ubx', 'lbx_e', 'ubx_e', 'lg', 'ug', 'lg_e', 'ug_e', 'lh', 'uh', 'lh_e', 'uh_e', 'lbu', 'ubu', 'lphi', 'uphi', 'lphi_e', 'uphi_e'};
+                end
+                for i = 1:length(fields)
+                    field = fields{i};
+                    bound = constraints.(field);
+                    if any(bound >= ACADOS_INFTY) || any(bound <= -ACADOS_INFTY)
+                        error(['Field ', field, ' contains values outside the interval (-ACADOS_INFTY, ACADOS_INFTY) with ACADOS_INFTY = ', num2str(ACADOS_INFTY, '%.2e'), '. One-sided constraints are not supported by the chosen QP solver ', opts.qp_solver, '.']);
+                    end
+                end
+            end
+
+            self.make_consistent_discretization();
+
+            % cost_scaling
+            if isempty(opts.cost_scaling)
+                opts.cost_scaling = [opts.time_steps(:); 1.0];
+            elseif length(opts.cost_scaling) ~= opts.N_horizon+1
+                error(['cost_scaling must have length N+1 = ', num2str(N+1)]);
+            end
+
+            self.make_consistent_simulation();
 
             if strcmp(opts.qp_solver, "PARTIAL_CONDENSING_HPMPC") || ...
                 strcmp(opts.qp_solver, "PARTIAL_CONDENSING_QPDUNES") || ...
@@ -644,20 +1303,40 @@ classdef AcadosOcp < handle
                 if opts.hessian_approx == 'EXACT'
                     error('fixed_hess and hessian_approx = EXACT are incompatible')
                 end
-                if ~(strcmp(cost.cost_type_0, "LINEAR_LS") && strcmp(cost.cost_type, "LINEAR_LS") && strcmp(cost.cost_type_e, "LINEAR_LS"))
-                    error('fixed_hess requires LINEAR_LS cost type')
+                if ~strcmp(cost.cost_type_0, "LINEAR_LS") && opts.N_horizon > 0
+                    error('fixed_hess requires LINEAR_LS cost_type_0')
+                end
+                if ~strcmp(cost.cost_type, "LINEAR_LS") && opts.N_horizon > 0
+                    error('fixed_hess requires LINEAR_LS cost_type')
+                end
+                if ~strcmp(cost.cost_type_e, "LINEAR_LS")
+                    error('fixed_hess requires LINEAR_LS cost_type_e')
                 end
             end
 
-            % TODO: add checks for solution sensitivities when brining them to Matlab
+            % TODO: add checks for solution sensitivities when brining them to MATLAB
+
+            if strcmp(opts.regularize_method, 'PROJECT_REDUC_HESS')
+                if opts.qp_solver_ric_alg ~= 0
+                    opts.qp_solver_ric_alg = 0;
+                    warning('For regularize_method PROJECT_REDUC_HESS, qp_solver_ric_alg should be 0, option was changed automatically.');
+                end
+                if opts.qp_solver_cond_ric_alg ~= 0
+                    opts.qp_solver_cond_ric_alg = 0;
+                    warning('For regularize_method PROJECT_REDUC_HESS, qp_solver_cond_ric_alg should be 0, option was changed automatically.');
+                end
+            end
 
             % check if qp_solver_cond_N is set
             if isempty(opts.qp_solver_cond_N)
-                opts.qp_solver_cond_N = N;
+                opts.qp_solver_cond_N = opts.N_horizon;
+            end
+            if opts.qp_solver_cond_N > opts.N_horizon
+                error('qp_solver_cond_N > N_horizon is not supported.');
             end
 
             if ~isempty(opts.qp_solver_cond_block_size)
-                if sum(opts.qp_solver_cond_block_size) ~= N
+                if sum(opts.qp_solver_cond_block_size) ~= opts.N_horizon
                     error(['sum(qp_solver_cond_block_size) =', num2str(sum(opts.qp_solver_cond_block_size)), ' != N = {opts.N_horizon}.']);
                 end
                 if length(opts.qp_solver_cond_block_size) ~= opts.qp_solver_cond_N+1
@@ -666,14 +1345,42 @@ classdef AcadosOcp < handle
             end
 
             if strcmp(opts.nlp_solver_type, "DDP")
+                if opts.N_horizon == 0
+                    error('DDP solver only supported for N_horizon > 0.');
+                end
                 if ~strcmp(opts.qp_solver, "PARTIAL_CONDENSING_HPIPM") || (opts.qp_solver_cond_N ~= opts.N_horizon)
-                    error('DDP solver only supported for PARTIAL_CONDENSING_HPIPM with qp_solver_cond_N == N.');
+                    error('DDP solver only supported for PARTIAL_CONDENSING_HPIPM with qp_solver_cond_N == N_horizon.');
                 end
                 if any([dims.nbu, dims.nbx, dims.ng, dims.nh, dims.nphi])
                     error('DDP only supports initial state constraints, got path constraints.')
                 end
                 if any([dims.ng_e, dims.nphi_e, dims.nh_e])
                     error('DDP only supports initial state constraints, got terminal constraints.')
+                end
+            end
+
+            if ~ismember(opts.qp_solver_t0_init, [0, 1, 2])
+                error('qp_solver_t0_init must be one of [0, 1, 2].');
+            end
+
+            if opts.tau_min > 0 && isempty(strfind(opts.qp_solver, 'HPIPM'))
+                error('tau_min > 0 is only compatible with HPIPM.');
+            end
+
+            if opts.N_horizon == 0
+                cost_types_to_check = [strcmp(cost.cost_type_e, {'LINEAR_LS', 'NONLINEAR_LS'})];
+            else
+                cost_types_to_check = [strcmp(cost.cost_type, {'LINEAR_LS', 'NONLINEAR_LS'}) ...
+                                            strcmp(cost.cost_type_0, {'LINEAR_LS', 'NONLINEAR_LS'}) ...
+                                            strcmp(cost.cost_type_e, {'LINEAR_LS', 'NONLINEAR_LS'})];
+            end
+            if (opts.as_rti_level == 1 || opts.as_rti_level == 2) && any(cost_types_to_check)
+                error('as_rti_level in [1, 2] not supported for LINEAR_LS and NONLINEAR_LS cost type.');
+            end
+
+            if ~strcmp(opts.qpscaling_scale_constraints, "NO_CONSTRAINT_SCALING") || ~strcmp(opts.qpscaling_scale_objective, "NO_OBJECTIVE_SCALING")
+                if strcmp(opts.nlp_solver_type, "SQP_RTI")
+                    error('qpscaling_scale_constraints and qpscaling_scale_objective not supported for SQP_RTI solver.');
                 end
             end
 
@@ -686,15 +1393,6 @@ classdef AcadosOcp < handle
                     opts.globalization_alpha_min = 1e-17;
                 else
                     opts.globalization_alpha_min = 0.05;
-                end
-            end
-
-            if isempty(opts.globalization_alpha_reduction)
-                % if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
-                if ddp_with_merit_or_funnel
-                    opts.globalization_alpha_reduction = 0.5;
-                else
-                    opts.globalization_alpha_reduction = 0.7;
                 end
             end
 
@@ -749,6 +1447,10 @@ classdef AcadosOcp < handle
                 opts.globalization_fixed_step_length = opts.nlp_solver_step_length;
             end
 
+            if opts.globalization_fixed_step_length < 0.0 || opts.globalization_fixed_step_length > 1.0
+                error('globalization_fixed_step_length must be in [0, 1].');
+            end
+
             % Set default parameters for globalization
             if isempty(opts.globalization_alpha_min)
                 % if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
@@ -756,15 +1458,6 @@ classdef AcadosOcp < handle
                     opts.globalization_alpha_min = 1e-17;
                 else
                     opts.globalization_alpha_min = 0.05;
-                end
-            end
-
-            if isempty(opts.globalization_alpha_reduction)
-                % if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
-                if ddp_with_merit_or_funnel
-                    opts.globalization_alpha_reduction = 0.5;
-                else
-                    opts.globalization_alpha_reduction = 0.7;
                 end
             end
 
@@ -786,18 +1479,49 @@ classdef AcadosOcp < handle
                 end
             end
 
-            % sanity check for Funnel globalization and SQP
-            if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH') strcmp(opts.nlp_solver_type, 'SQP')
-                error('FUNNEL_L1PEN_LINESEARCH only supports SQP.')
+            if isa(self.zoro_description, 'ZoroDescription')
+                if opts.N_horizon == 0
+                    error('ZORO only supported for N_horizon > 0.');
+                end
+                self.zoro_description.make_consistent(self.dims);
             end
 
-            if isa(self.zoro_description, 'ZoroDescription')
-                self.zoro_description.process();
+            % Anderson acceleration
+            if opts.with_anderson_acceleration
+                if strcmp(opts.nlp_solver_type, "DDP")
+                    error('Anderson acceleration not supported for DDP solver.');
+                end
+                if ~strcmp(opts.globalization, "FIXED_STEP")
+                    error('Anderson acceleration only supported for FIXED_STEP globalization for now.');
+                end
+            end
+
+            % check terminal stage
+            fields = {'cost_expr_ext_cost_e', 'cost_expr_ext_cost_custom_hess_e', ...
+                      'cost_y_expr_e', 'cost_psi_expr_e', 'cost_conl_custom_outer_hess_e', ...
+                      'con_h_expr_e', 'con_phi_expr_e', 'con_r_expr_e'};
+            for i = 1:length(fields)
+                field = fields{i};
+                val = model.(field);
+                if ~isempty(val) && (depends_on(val, model.u) || depends_on(val, model.z))
+                    error([field ' can not depend on u or z.'])
+                end
             end
         end
 
-        function [] = detect_cost_and_constraints(self)
+        function [] = detect_cost_and_constraints(self, mocp_info)
             % detect cost type
+            N = self.solver_options.N_horizon;
+            if N == 0
+                if strcmp(self.cost.cost_type_e, 'AUTO')
+                    detect_cost_type(self.model, self.cost, self.dims, 'terminal');
+                end
+                if strcmp(self.constraints.constr_type_e, 'AUTO')
+                    detect_constraint_structure(self.model, self.constraints, 'terminal');
+                end
+                return
+            end
+
             stage_types = {'initial', 'path', 'terminal'};
             cost_types = {self.cost.cost_type_0, self.cost.cost_type, self.cost.cost_type_e};
 
@@ -808,38 +1532,31 @@ classdef AcadosOcp < handle
             end
 
             % if initial is empty, copy path cost
-            % TODO: move this to make_consistent? should happen way before?
             if isempty(cost_types{1})
-                warning("cost_type_0 not set, using path cost");
+                if isempty(mocp_info) || mocp_info.phase_idx == 0
+                    warning("cost_type_0 not set, using path cost");
+                end
                 self.cost.cost_type_0 = self.cost.cost_type;
-                if (strcmp(self.cost.cost_type, 'LINEAR_LS'))
-                    self.cost.Vx_0 = self.cost.Vx;
-                    self.cost.Vu_0 = self.cost.Vu;
-                    self.cost.Vz_0 = self.cost.Vz;
-                elseif (strcmp(self.cost.cost_type, 'NONLINEAR_LS'))
-                    self.model.cost_y_expr_0 = self.model.cost_y_expr;
-                elseif (strcmp(self.cost.cost_type, 'EXTERNAL'))
-                    self.cost.cost_ext_fun_type_0 = self.cost.cost_ext_fun_type;
-                    if strcmp(self.cost.cost_ext_fun_type_0, 'casadi')
-                        self.model.cost_expr_ext_cost_0 = self.model.cost_expr_ext_cost;
-                        self.model.cost_expr_ext_cost_custom_hess_0 = self.model.cost_expr_ext_cost_custom_hess;
-                    else % generic
-                        self.cost.cost_source_ext_cost_0 = self.cost.cost_source_ext_cost;
-                        self.cost.cost_function_ext_cost_0 = self.cost.cost_function_ext_cost;
-                    end
-                end
-                if (strcmp(self.cost.cost_type, 'LINEAR_LS')) || (strcmp(self.cost.cost_type, 'NONLINEAR_LS'))
-                    self.cost.W_0 = self.cost.W;
-                    self.cost.yref_0 = self.cost.yref;
-                    self.dims.ny_0 = self.dims.ny;
-                end
+                self.cost.Vx_0 = self.cost.Vx;
+                self.cost.Vu_0 = self.cost.Vu;
+                self.cost.Vz_0 = self.cost.Vz;
+                self.model.cost_y_expr_0 = self.model.cost_y_expr;
+                self.cost.cost_ext_fun_type_0 = self.cost.cost_ext_fun_type;
+                self.model.cost_expr_ext_cost_0 = self.model.cost_expr_ext_cost;
+                self.model.cost_expr_ext_cost_custom_hess_0 = self.model.cost_expr_ext_cost_custom_hess;
+                self.cost.cost_source_ext_cost_0 = self.cost.cost_source_ext_cost;
+                self.cost.cost_function_ext_cost_0 = self.cost.cost_function_ext_cost;
+                self.cost.W_0 = self.cost.W;
+                self.cost.yref_0 = self.cost.yref;
+                self.model.cost_psi_expr_0 = self.model.cost_psi_expr;
+                self.model.cost_r_in_psi_expr_0 = self.model.cost_r_in_psi_expr;
             end
 
             % detect constraint structure
             constraint_types = {self.constraints.constr_type_0, self.constraints.constr_type, self.constraints.constr_type_e};
             for n=1:3
                 if strcmp(constraint_types{n}, 'AUTO')
-                    detect_constr(self.model, self.constraints, stage_types{n});
+                    detect_constraint_structure(self.model, self.constraints, stage_types{n});
                 end
             end
         end
@@ -856,25 +1573,102 @@ classdef AcadosOcp < handle
                 code_gen_opts.with_solution_sens_wrt_params = solver_opts.with_solution_sens_wrt_params;
                 code_gen_opts.with_value_sens_wrt_params = solver_opts.with_value_sens_wrt_params;
                 code_gen_opts.code_export_directory = ocp.code_export_directory;
+
+                code_gen_opts.ext_fun_expand_dyn = solver_opts.ext_fun_expand_dyn;
+                code_gen_opts.ext_fun_expand_cost = solver_opts.ext_fun_expand_cost;
+                code_gen_opts.ext_fun_expand_constr = solver_opts.ext_fun_expand_constr;
+                code_gen_opts.ext_fun_expand_precompute = solver_opts.ext_fun_expand_precompute;
+
                 context = GenerateContext(ocp.model.p_global, ocp.name, code_gen_opts);
             else
                 code_gen_opts = context.opts;
             end
-            context = setup_code_generation_context(ocp, context);
+            context = setup_code_generation_context(ocp, context, false, false);
             context.finalize();
             ocp.external_function_files_model = context.get_external_function_file_list(false);
             ocp.external_function_files_ocp = context.get_external_function_file_list(true);
             ocp.dims.n_global_data = context.get_n_global_data();
         end
 
-        function context = setup_code_generation_context(ocp, context)
+        function context = setup_code_generation_context(ocp, context, ignore_initial, ignore_terminal)
             code_gen_opts = context.opts;
             solver_opts = ocp.solver_options;
             constraints = ocp.constraints;
             cost = ocp.cost;
             dims = ocp.dims;
 
-            % dynamics
+            setup_code_generation_context_dynamics(ocp, context);
+
+            if solver_opts.N_horizon == 0
+                stage_type_indices = [3];
+            else
+                if ignore_initial && ignore_terminal
+                    stage_type_indices = [2];
+                elseif ignore_terminal
+                    stage_type_indices = [1, 2];
+                elseif ignore_initial
+                    stage_type_indices = [2, 3];
+                else
+                    stage_type_indices = [1, 2, 3];
+                end
+            end
+
+            stage_types = {'initial', 'path', 'terminal'};
+
+            % cost
+            cost_types = {cost.cost_type_0, cost.cost_type, cost.cost_type_e};
+            cost_ext_fun_types = {cost.cost_ext_fun_type_0, cost.cost_ext_fun_type, cost.cost_ext_fun_type_e};
+            cost_dir = fullfile(pwd, ocp.code_export_directory, [ocp.name '_cost']);
+
+            for n = 1:length(stage_type_indices)
+
+                i = stage_type_indices(n);
+                if strcmp(cost_ext_fun_types{i}, 'generic')
+                    if strcmp(cost_types{i}, 'EXTERNAL')
+                        setup_generic_cost(context, cost, cost_dir, stage_types{i})
+                    else
+                        error('Unknown cost_type for cost_ext_fun_types generic: got %s', cost_types{i});
+                    end
+
+                else
+                    check_casadi_version();
+                    switch cost_types{i}
+                        case 'LINEAR_LS'
+                            continue
+                        case 'NONLINEAR_LS'
+                            generate_c_code_nonlinear_least_squares(context, ocp.model, cost_dir, stage_types{i});
+
+                        case 'CONVEX_OVER_NONLINEAR'
+                            generate_c_code_conl_cost(context, ocp.model, cost_dir, stage_types{i});
+
+                        case 'EXTERNAL'
+                            generate_c_code_ext_cost(context, ocp.model, cost_dir, stage_types{i});
+                        otherwise
+                            error('Unknown value for cost_ext_fun_types %s', cost_ext_fun_types{i});
+                    end
+                end
+            end
+
+            % constraints
+            constraints_types = {constraints.constr_type_0, constraints.constr_type, constraints.constr_type_e};
+            constraints_dims = {dims.nh_0, dims.nh, dims.nh_e};
+            constraints_dir = fullfile(pwd, ocp.code_export_directory, [ocp.name '_constraints']);
+
+            for n = 1:length(stage_type_indices)
+                i = stage_type_indices(n);
+                if strcmp(constraints_types{i}, 'BGH') && constraints_dims{i} > 0
+                    generate_c_code_nonlinear_constr(context, ocp.model, constraints_dir, stage_types{i});
+                end
+            end
+        end
+
+        function setup_code_generation_context_dynamics(ocp, context)
+            code_gen_opts = context.opts;
+            solver_opts = ocp.solver_options;
+            if solver_opts.N_horizon == 0
+                return
+            end
+
             model_dir = fullfile(pwd, code_gen_opts.code_export_directory, [ocp.name '_model']);
 
             if strcmp(ocp.model.dyn_ext_fun_type, 'generic')
@@ -902,51 +1696,6 @@ classdef AcadosOcp < handle
                 end
             else
                 error('Unknown dyn_ext_fun_type.')
-            end
-
-            stage_types = {'initial', 'path', 'terminal'};
-
-            % cost
-            cost_types = {cost.cost_type_0, cost.cost_type, cost.cost_type_e};
-            cost_ext_fun_types = {cost.cost_ext_fun_type_0, cost.cost_ext_fun_type, cost.cost_ext_fun_type_e};
-            cost_dir = fullfile(pwd, ocp.code_export_directory, [ocp.name '_cost']);
-
-            for i = 1:3
-                if strcmp(cost_ext_fun_types{i}, 'generic')
-                    if strcmp(cost_types{i}, 'EXTERNAL')
-                        setup_generic_cost(context, cost, cost_dir, stage_types{i})
-                    else
-                        error('Unknown cost_type for cost_ext_fun_types generic: got %s', cost_types{i});
-                    end
-
-                else
-                    check_casadi_version();
-                    switch cost_types{i}
-                        case 'LINEAR_LS'
-                            continue
-                        case 'NONLINEAR_LS'
-                            generate_c_code_nonlinear_least_squares(context, ocp.model, cost_dir, stage_types{i});
-
-                        case 'CONVEX_OVER_NONLINEAR'
-                            error("Convex-over-nonlinear cost is not implemented yet.")
-
-                        case 'EXTERNAL'
-                            generate_c_code_ext_cost(context, ocp.model, cost_dir, stage_types{i});
-                        otherwise
-                            error('Unknown value for cost_ext_fun_types %s', cost_ext_fun_types{i});
-                    end
-                end
-            end
-
-            % constraints
-            constraints_types = {constraints.constr_type_0, constraints.constr_type, constraints.constr_type_e};
-            constraints_dims = {dims.nh_0, dims.nh, dims.nh_e};
-            constraints_dir = fullfile(pwd, ocp.code_export_directory, [ocp.name '_constraints']);
-
-            for i = 1:3
-                if strcmp(constraints_types{i}, 'BGH') && constraints_dims{i} > 0
-                    generate_c_code_nonlinear_constr(context, ocp.model, constraints_dir, stage_types{i});
-                end
             end
         end
 
@@ -1022,7 +1771,6 @@ classdef AcadosOcp < handle
             template_list{end+1} = {fullfile(matlab_template_path, 'acados_mex_free.in.c'), ['acados_mex_free_', self.name, '.c']};
             template_list{end+1} = {fullfile(matlab_template_path, 'acados_mex_solve.in.c'), ['acados_mex_solve_', self.name, '.c']};
             template_list{end+1} = {fullfile(matlab_template_path, 'acados_mex_set.in.c'), ['acados_mex_set_', self.name, '.c']};
-            template_list{end+1} = {fullfile(matlab_template_path, 'acados_mex_reset.in.c'), ['acados_mex_reset_', self.name, '.c']};
 
             if ~isempty(self.solver_options.custom_update_filename)
                 template_list{end+1} = {fullfile(matlab_template_path, 'acados_mex_custom_update.in.c'), ['acados_mex_custom_update_', self.name, '.c']};
@@ -1031,7 +1779,7 @@ classdef AcadosOcp < handle
             % append headers
             template_list = [template_list, self.get_external_function_header_templates()];
 
-            if self.dims.np_global > 0
+            if self.dims.n_global_data > 0
                 template_list{end+1} = {'p_global_precompute_fun.in.h',  [self.model.name, '_p_global_precompute_fun.h']};
             end
 

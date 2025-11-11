@@ -76,7 +76,7 @@
     {% set_global ns_total = ns_total + (end_idx[jj] - cost_start_idx[jj]) * phases_dims[jj].ns %}
     {% set_global nx_total = nx_total + (end_idx[jj] - start_idx[jj]) * phases_dims[jj].nx %}
     {% set_global nbx_total = nbx_total + (end_idx[jj] - cost_start_idx[jj]) * phases_dims[jj].nbx %}
-    {% set_global nh_total = nh_total + (end_idx[jj] - cost_start_idx[jj]) * phases_dims[jj].nbx %}
+    {% set_global nh_total = nh_total + (end_idx[jj] - cost_start_idx[jj]) * phases_dims[jj].nh %}
     {% set_global nu_total = nu_total + (end_idx[jj] - start_idx[jj]) * phases_dims[jj].nu %}
     {% set_global nbu_total = nbu_total + (end_idx[jj] - start_idx[jj]) * phases_dims[jj].nbu %}
     {% set_global nz_total = nz_total + (end_idx[jj] - start_idx[jj]) * phases_dims[jj].nz %}
@@ -154,6 +154,9 @@ COMPDEFINES = [ COMPDEFINES, ' -DACADOS_WITH_QPOASES ' ];
 {%- elif solver_options.qp_solver is containing("OSQP") %}
 CFLAGS = [ CFLAGS, ' -DACADOS_WITH_OSQP ' ];
 COMPDEFINES = [ COMPDEFINES, ' -DACADOS_WITH_OSQP ' ];
+{%- elif solver_options.qp_solver is containing("CLARABEL") %}
+CFLAGS = [ CFLAGS, ' -DACADOS_WITH_CLARABEL ' ];
+COMPDEFINES = [ COMPDEFINES, ' -DACADOS_WITH_CLARABEL ' ];
 {%- elif solver_options.qp_solver is containing("QPDUNES") %}
 CFLAGS = [ CFLAGS, ' -DACADOS_WITH_QPDUNES ' ];
 COMPDEFINES = [ COMPDEFINES, ' -DACADOS_WITH_QPDUNES ' ];
@@ -430,6 +433,12 @@ sfun_input_names = [sfun_input_names; 'rti_phase [1]'];
 i_in = i_in + 1;
 {%- endif %}
 
+{%- if simulink_opts.inputs.levenberg_marquardt %}  {#- levenberg_marquardt #}
+input_note = strcat(input_note, num2str(i_in), ') levenberg_marquardt, size [1]\n ');
+sfun_input_names = [sfun_input_names; 'levenberg_marquardt [1]'];
+i_in = i_in + 1;
+{%- endif %}
+
 {%- if simulink_opts.customizable_inputs %}
 {#- customizable inputs #}
 {%- for input_name, input_spec in simulink_opts.customizable_inputs -%}
@@ -562,6 +571,38 @@ sfun_output_names = [sfun_output_names; 'parameter_traj [{{ np_total }}]'];
 {%- endif %}
 
 fprintf(output_note)
+
+{%- if simulink_opts.generate_simulink_block == 1 %}
+modelName = '{{ name }}_ocp_solver_simulink_block';
+new_system(modelName);
+open_system(modelName);
+
+blockPath = [modelName '/{{ name }}_ocp_solver'];
+add_block('simulink/User-Defined Functions/S-Function', blockPath);
+set_param(blockPath, 'FunctionName', 'acados_solver_sfunction_{{ name }}');
+
+Simulink.Mask.create(blockPath);
+{%- if simulink_opts.show_port_info == 1 %}
+mask_str = sprintf([ ...
+    'global sfun_input_names sfun_output_names\n' ...
+    'for i = 1:length(sfun_input_names)\n' ...
+    '    port_label(''input'', i, sfun_input_names{i})\n' ...
+    'end\n' ...
+    'for i = 1:length(sfun_output_names)\n' ...
+    '    port_label(''output'', i, sfun_output_names{i})\n' ...
+    'end\n' ...
+    'disp("acados OCP")' ...
+]);
+{%- else %}
+mask_str = sprintf('disp("acados OCP")');
+{%- endif %}
+mask = Simulink.Mask.get(blockPath);
+mask.Display = mask_str;
+
+save_system(modelName);
+close_system(modelName);
+disp([newline, 'Created the OCP solver Simulink block in: ', modelName])
+{%- endif %}
 
 % The mask drawing command is:
 % ---

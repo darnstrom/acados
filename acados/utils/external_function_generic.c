@@ -1333,9 +1333,9 @@ void external_function_external_param_generic_assign(external_function_external_
     fun->ptr_ext_mem = raw_memory;
 
     // char pointer for byte advances
-    char *c_ptr = raw_memory;
+    // char *c_ptr = raw_memory;
 
-    assert((char *) raw_memory + external_function_external_param_generic_calculate_size(fun, &fun->opts) >= c_ptr);
+    assert((char *) raw_memory + external_function_external_param_generic_calculate_size(fun, &fun->opts) >= (char *) raw_memory);
 
     return;
 }
@@ -1398,6 +1398,7 @@ static void external_function_external_param_casadi_set_global_data_pointer(void
 
     if (!fun->args_dense[fun->idx_in_global_data])
     {
+        // NOTE: sparsity is removed in MATLAB/Python interface
         printf("\nexternal_function_external_param_casadi_set_global_data_pointer: sparse global_data not supported!\n");
         exit(1);
     }

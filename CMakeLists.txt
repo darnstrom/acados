@@ -64,8 +64,8 @@ if ("${CMAKE_HOST_SYSTEM_PROCESSOR}" STREQUAL "aarch64")
 else()
     set(BLASFEO_TARGET "X64_AUTOMATIC" CACHE STRING "BLASFEO Target architecture")
 endif()
-set(HPIPM_TARGET "X64_AUTOMATIC" CACHE STRING "HPIPM Target architecture")
 set(LA "HIGH_PERFORMANCE" CACHE STRING "Linear algebra optimization level")
+set(HPIPM_TARGET "GENERIC" CACHE STRING "HPIPM Target architecture")
 
 if (CMAKE_SYSTEM_NAME MATCHES "Windows")
     set(BUILD_SHARED_LIBS OFF CACHE STRING "Build shared libraries")
@@ -76,6 +76,7 @@ endif()
 option(ACADOS_WITH_OPENMP "OpenMP Parallelization" OFF)
 option(ACADOS_SILENT "No console status output" OFF)
 option(ACADOS_DEBUG_SQP_PRINT_QPS_TO_FILE "Print QP inputs and outputs to file in SQP" OFF)
+option(ACADOS_DEVELOPER_DEBUG_CHECKS "Enable developer debug sanity checks. Avoids asserts" OFF)
 
 # Additional targets
 option(ACADOS_UNIT_TESTS "Compile Unit tests" OFF)
@@ -89,10 +90,15 @@ option(ACADOS_WITH_QORE "QORE solver" OFF)
 option(ACADOS_WITH_OOQP "OOQP solver" OFF)
 option(ACADOS_WITH_QPDUNES "qpDUNES solver" OFF)
 option(ACADOS_WITH_OSQP "OSQP solver" OFF)
+option(ACADOS_WITH_CLARABEL "Clarabel solver" OFF)
 # Interfaces
 option(ACADOS_OCTAVE "Octave Interface tests" OFF)
-option(ACADOS_PYTHON "Python Interface tests" OFF)
-
+# Options to use libraries found via find_package
+option(ACADOS_WITH_SYSTEM_BLASFEO "If ON, use blasfeo found via find_package(blasfeo) instead of compiling it" OFF)
+mark_as_advanced(ACADOS_WITH_SYSTEM_BLASFEO)
+if(ACADOS_WITH_SYSTEM_BLASFEO)
+    message(WARNING "The ACADOS_WITH_SYSTEM_BLASFEO option is enabled. ACADOS is tested by its developers only with ACADOS_WITH_SYSTEM_BLASFEO=OFF, when using an external blasfeo may sure that everything works as expected.")
+endif()
 
 # Set custom path
 set(EXTERNAL_SRC_DIR ${PROJECT_SOURCE_DIR}/external)
@@ -115,7 +121,7 @@ endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU" AND CMAKE_SYSTEM_NAME MATCHES "Windows")
     # MinGW: remove prefix and change suffix to match MSVC
-    # (such that Matlab mex recognizes the libraries)
+    # (such that MATLAB mex recognizes the libraries)
     set(CMAKE_SHARED_LIBRARY_PREFIX "")
     set(CMAKE_IMPORT_LIBRARY_SUFFIX ".lib")
     set(CMAKE_IMPORT_LIBRARY_PREFIX "")
@@ -187,6 +193,12 @@ if(ACADOS_DEBUG_SQP_PRINT_QPS_TO_FILE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DACADOS_DEBUG_SQP_PRINT_QPS_TO_FILE")
 endif()
 
+if(ACADOS_DEVELOPER_DEBUG_CHECKS)
+    message(STATUS "ACADOS_DEVELOPER_DEBUG_CHECKS is ON")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DACADOS_DEVELOPER_DEBUG_CHECKS")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DACADOS_DEVELOPER_DEBUG_CHECKS")
+endif()
+
 # uninstall
 if(NOT TARGET uninstall)
     # Configure Uninstall
@@ -212,6 +224,7 @@ if(CMAKE_BUILD_TYPE MATCHES WithExternalLibs)
 	set(ACADOS_WITH_DAQP ON CACHE BOOL "Add DAQP solver")
     set(ACADOS_WITH_QPDUNES ON CACHE BOOL "Add qpDUNES solver")
     set(ACADOS_WITH_OSQP ON CACHE BOOL "Add OSQP solver")
+    set(ACADOS_WITH_CLARABEL ON CACHE BOOL "Add Clarabel solver")
 endif()
 
 ## External lib checks (
@@ -235,7 +248,6 @@ if(ACADOS_WITH_OOQP MATCHES ON)
 endif()
 
 if(ACADOS_WITH_QORE MATCHES ON)
-
     if(CMAKE_SYSTEM_NAME MATCHES "dSpace" OR CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
         set(ACADOS_WITH_QORE OFF CACHE BOOL "Add QORE solver" FORCE)
         message(WARNING "QORE is not compatible with MSVC or dSpace, QORE is has been disabled")
@@ -254,7 +266,7 @@ if(ACADOS_LINT)
     endif()
 endif()
 
-if(ACADOS_OCTAVE OR ACADOS_PYTHON)
+if(ACADOS_OCTAVE)
     add_subdirectory(${PROJECT_SOURCE_DIR}/interfaces)
 endif()
 
@@ -327,6 +339,9 @@ endif()
 if(${ACADOS_WITH_HPMPC})
     set(LINK_FLAG_HPMPC -lhpmpc)
 endif()
+if(${ACADOS_WITH_CLARABEL})
+    set(LINK_FLAG_CLARABEL -lclarabel_c)
+endif()
 # if(${ACADOS_WITH_QORE})
 #     set(LINK_FLAG_QORE -lqore)
 # endif()
@@ -340,6 +355,7 @@ file(APPEND lib/link_libs.json \t\"qpoases\":\ \"${LINK_FLAG_QPOASES}\",\n)
 file(APPEND lib/link_libs.json \t\"daqp\":\ \"${LINK_FLAG_DAQP}\",\n)
 file(APPEND lib/link_libs.json \t\"qpdunes\":\ \"${LINK_FLAG_QPDUNES}\",\n)
 file(APPEND lib/link_libs.json \t\"osqp\":\ \"${LINK_FLAG_OSQP}\",\n)
+file(APPEND lib/link_libs.json \t\"clarabel\":\ \"${LINK_FLAG_CLARABEL}\",\n)
 file(APPEND lib/link_libs.json \t\"hpmpc\":\ \"${LINK_FLAG_HPMPC}\",\n)
 # file(APPEND lib/link_libs.json \t\"qore\":\ \"${LINK_FLAG_QORE}\",\n)
 file(APPEND lib/link_libs.json \t\"ooqp\":\ \"${LINK_FLAG_OOQP}\"\n) # no final comma!

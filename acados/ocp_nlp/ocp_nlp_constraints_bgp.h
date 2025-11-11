@@ -61,7 +61,8 @@ typedef struct
     int nbx;
     int ng;   // number of general linear constraints
     int nphi; // dimension of convex outer part
-    int ns;   // nsbu + nsbx + nsg + nsphi
+    int ns;   // number of slack variables per side, i.e. lower + upper
+    int ns_derived;  // number of slack variables derived from nsbu + nsbx + nsg + nsphi
     int nsbu; // number of softened input bounds
     int nsbx; // number of softened state bounds
     int nsg;  // number of softened general linear constraints
@@ -85,10 +86,12 @@ void ocp_nlp_constraints_bgp_dims_get(void *config_, void *dims_, const char *fi
 
 typedef struct
 {
-    //  ocp_nlp_constraints_bgp_dims *dims;
+    int use_idxs_rev;  // flag to indicate if idxs_rev formulation is used
     int *idxb;
     int *idxs;
+    int *idxs_rev;
     int *idxe;
+    struct blasfeo_dvec *dmask;  // pointer to dmask in ocp_nlp_in
     struct blasfeo_dvec d;
     struct blasfeo_dmat DCt;
     external_function_generic *nl_constr_phi_o_r_fun_phi_jac_ux_z_phi_hess_r_jac_ux;
@@ -136,12 +139,11 @@ typedef struct
     struct blasfeo_dvec *ux;     // pointer to ux in nlp_out
     struct blasfeo_dvec *lam;    // pointer to lam in nlp_out
     struct blasfeo_dvec *z_alg;  // pointer to z_alg in ocp_nlp memory
-    struct blasfeo_dvec *dmask;  // pointer to dmask in qp_in
     struct blasfeo_dmat *DCt;    // pointer to DCt in qp_in
     struct blasfeo_dmat *RSQrq;  // pointer to RSQrq in qp_in
     struct blasfeo_dmat *dzduxt; // pointer to dzduxt in ocp_nlp memory
     int *idxb;                   // pointer to idxb[ii] in qp_in
-    int *idxs_rev;                   // pointer to idxs_rev[ii] in qp_in
+    int *idxs_rev;               // pointer to idxs_rev[ii] in qp_in
     int *idxe;                   // pointer to idxe[ii] in qp_in
 } ocp_nlp_constraints_bgp_memory;
 
@@ -162,8 +164,6 @@ void ocp_nlp_constraints_bgp_memory_set_lam_ptr(struct blasfeo_dvec *lam, void *
 void ocp_nlp_constraints_bgp_memory_set_DCt_ptr(struct blasfeo_dmat *DCt, void *memory);
 //
 void ocp_nlp_constraints_bgp_memory_set_z_alg_ptr(struct blasfeo_dvec *z_alg, void *memory_);
-//
-void ocp_nlp_constraints_bgp_memory_set_dmask_ptr(struct blasfeo_dvec *dmask, void *memory_);
 //
 void ocp_nlp_constraints_bgp_memory_set_dzduxt_ptr(struct blasfeo_dmat *dzduxt, void *memory_);
 //

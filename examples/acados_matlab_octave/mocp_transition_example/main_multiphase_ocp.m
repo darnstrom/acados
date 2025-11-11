@@ -37,11 +37,12 @@ N_horizon = sum(N_list);
 % create_multiphase_ocp_solver
 ocp = AcadosMultiphaseOcp(N_list);
 
-phase_1 = formulate_double_integrator_ocp(settings);
+phase_1 = formulate_double_integrator_ocp(settings, 1);
 ocp.set_phase(phase_1, 1);
 
 phase_2 = AcadosOcp();
 phase_2.model = get_transition_model();
+
 % define transition cost
 phase_2.cost.cost_type = 'NONLINEAR_LS';
 phase_2.model.cost_y_expr = phase_2.model.x;
@@ -49,7 +50,7 @@ phase_2.cost.W = diag([settings.L2_COST_P, 1e-1 * settings.L2_COST_V]);
 phase_2.cost.yref = zeros(2, 1);
 ocp.set_phase(phase_2, 2);
 
-phase_3 = formulate_single_integrator_ocp(settings);
+phase_3 = formulate_single_integrator_ocp(settings, 1);
 ocp.set_phase(phase_3, 3);
 
 % set mocp specific options
@@ -73,8 +74,20 @@ ocp.solver_options.store_iterates = true;
 
 ocp_solver = AcadosOcpSolver(ocp);
 
+% initialize x trajectory using flattened format
+x0 = ocp.constraints{1}.x0;
+x_init = [repmat(x0, 1, N_list(1)+N_list(2)) repmat(x0(1), 1, N_list(3)+1)];
+ocp_solver.set('x', x_init);
+
+% update state bounds using flattened format
+lbx = [repmat([-10, -5], 1, N_list(1)) repmat([-10], 1, N_list(3)+1)];
+ocp_solver.set('constr_lbx', lbx);
+
+% need to set initial state after updating the bounds on x as this again overwrites lbx_0
+ocp_solver.set('constr_x0', x0);
+
 ocp_solver.solve();
-ocp_solver.print()
+ocp_solver.print();
 
 iterate = ocp_solver.get_iterate(ocp_solver.get('sqp_iter'));
 

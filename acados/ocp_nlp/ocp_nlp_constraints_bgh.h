@@ -63,7 +63,8 @@ typedef struct
     int nbx; // number of state box constraints
     int ng;  // number of general linear constraints
     int nh;  // number of nonlinear path constraints
-    int ns;  // nsbu + nsbx + nsg + nsh
+    int ns;  // number of slack variables per side, i.e. lower + upper, nsbu + nsbx + nsg + nsh
+    int ns_derived;  // number of slack variables derived from nsbu + nsbx + nsg + nsh
     int nsbu;  // number of softened input bounds
     int nsbx;  // number of softened state bounds
     int nsg;  // number of softened general linear constraints
@@ -73,6 +74,7 @@ typedef struct
     int nge;  // number of general linear constraints which are equality
     int nhe;  // number of nonlinear path constraints which are equality
     int np_global;
+
 } ocp_nlp_constraints_bgh_dims;
 
 //
@@ -92,9 +94,12 @@ void ocp_nlp_constraints_bgh_dims_set(void *config_, void *dims_,
 
 typedef struct
 {
+    int use_idxs_rev;  // flag to indicate if idxs_rev formulation is used
     int *idxb;
     int *idxs;
+    int *idxs_rev;
     int *idxe;
+    struct blasfeo_dvec *dmask;  // pointer to dmask in ocp_nlp_in
     struct blasfeo_dvec d;  // gathers bounds
     struct blasfeo_dmat DCt;  // general linear constraint matrix
             // lg <= [D, C] * [u; x] <= ug
@@ -156,7 +161,6 @@ typedef struct
     struct blasfeo_dvec *ux;     // pointer to ux in nlp_out
     struct blasfeo_dvec *lam;    // pointer to lam in nlp_out
     struct blasfeo_dvec *z_alg;  // pointer to z_alg in ocp_nlp memory
-    struct blasfeo_dvec *dmask;  // pointer to dmask in ocp_nlp memory
     struct blasfeo_dmat *DCt;    // pointer to DCt in qp_in
     struct blasfeo_dmat *RSQrq;  // pointer to RSQrq in qp_in
     struct blasfeo_dmat *dzduxt; // pointer to dzduxt in ocp_nlp memory
