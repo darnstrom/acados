@@ -765,6 +765,39 @@ int dense_qp_daqp(void* config_, dense_qp_in *qp_in, dense_qp_out *qp_out, void 
     // if setup failed, abort
     if(daqp_status < 0)
         return daqp_status;
+
+    // Fix SOFT_WEIGHTS scaling for daqp v0.8.0:
+    // In v0.8.0, daqp_update_ldp stores scaling[i] = 1/norm_i (inverted vs older versions).
+    // The SOFT_WEIGHTS block in daqp_update_ldp does d_ls *= scaling (= d_ls/norm), which is wrong;
+    // the correct scaled value is d_ls/scaling = d_ls*norm. Override d_ls and rho_ls with the
+    // correctly scaled values recomputed from the original physical values stored in memory.
+    {
+        int nv_ = qp_in->dim->nv;
+        int nb_ = qp_in->dim->nb;
+        int ns_ = qp_in->dim->ns;
+        if (ns_ > 0 && work->scaling != NULL)
+        {
+            int *idxs_ = memory->idxs;
+            int *idxb_ = memory->idxb;
+            for (int ii = 0; ii < ns_; ii++)
+            {
+                int idxdaqp = idxs_[ii] < nb_ ? idxb_[idxs_[ii]] : nv_ + idxs_[ii] - nb_;
+                double s = work->scaling[idxdaqp];  // = 1/norm in v0.8.0
+                if (s > 0)
+                {
+                    double d_ls_phys = MAX(0, memory->zl[ii] + memory->Zl[ii] * memory->d_ls[ii]);
+                    double d_us_phys = MAX(0, memory->zu[ii] + memory->Zu[ii] * memory->d_us[ii]);
+                    // Correctly scaled: d_ls_correct = d_ls_phys / s = d_ls_phys * norm
+                    work->d_ls[idxdaqp] = d_ls_phys / s;
+                    work->d_us[idxdaqp] = d_us_phys / s;
+                    // Correctly scaled: rho_ls_correct = (1/Zl) * s^2 = 1/(Zl * norm^2)
+                    work->rho_ls[idxdaqp] = s * s / memory->Zl[ii];
+                    work->rho_us[idxdaqp] = s * s / memory->Zu[ii];
+                }
+            }
+        }
+    }
+
     // solve LDP
     if (opts->warm_start==1)
         daqp_activate_constraints(work);
