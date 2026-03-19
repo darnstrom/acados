@@ -678,8 +678,8 @@ static void dense_qp_daqp_fill_output(dense_qp_daqp_memory *mem, const dense_qp_
     {
         idx = idxs[i] < nb ? idxb[idxs[i]] : nv+idxs[i]-nb;
         // shift back QP
-        // After daqp_update_ldp + post-correction: d_ls = d_ls_phys / scaling.
-        // Multiplying by scaling recovers d_ls_phys: d_ls * scaling = d_ls_phys.
+        // After SOFT_WEIGHTS in daqp_update_ldp: d_ls_LDP = d_ls_phys / scaling[idx].
+        // Multiplying by scaling recovers d_ls_phys: d_ls_LDP * scaling = d_ls_phys.
         work->qp->blower[idx]-=(mem->zl[i]-work->d_ls[idx]*work->scaling[idx])/mem->Zl[i];
         work->qp->bupper[idx]+=(mem->zu[i]-work->d_us[idx]*work->scaling[idx])/mem->Zu[i];
 
@@ -765,29 +765,6 @@ int dense_qp_daqp(void* config_, dense_qp_in *qp_in, dense_qp_out *qp_out, void 
     // if setup failed, abort
     if(daqp_status < 0)
         return daqp_status;
-
-    // daqp v0.8.0 changed the scaling convention from norm to 1/norm, but the
-    // SOFT_WEIGHTS block in utils.c still multiplies d_ls by scaling (now 1/norm)
-    // instead of dividing.  The result is d_ls = d_ls_phys/norm (wrong) and
-    // rho_ls = rho_orig*norm^2 (wrong).  Compensate here in acados rather than
-    // in the upstream daqp library so that CI can fetch the unmodified daqp
-    // submodule SHA.  Divide d_ls by s^2 and multiply rho_ls by s^4 to obtain
-    // the correct d_ls = d_ls_phys*norm and rho_ls = rho_orig/norm^2.
-    if (work->d_ls != NULL && work->scaling != NULL)
-    {
-        for (int i = 0; i < work->m; i++)
-        {
-            if (work->scaling[i] > 0)
-            {
-                c_float s2 = work->scaling[i] * work->scaling[i];
-                c_float s4 = s2 * s2;
-                work->d_ls[i]  /= s2;
-                work->d_us[i]  /= s2;
-                work->rho_ls[i] *= s4;
-                work->rho_us[i] *= s4;
-            }
-        }
-    }
 
     // solve LDP
     if (opts->warm_start==1)
