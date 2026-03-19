@@ -649,6 +649,12 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
         {
             MEX_FIELD_ONLY_SUPPORTED_FOR_SOLVER(fun_name, field, "sqp_rti")
         }
+{% if solver_options.as_rti_level != 4 and solver_options.nlp_solver_type != "SQP_RTI" %}
+        if (rti_phase == 0)
+        {
+            mexErrMsgTxt("AS-RTI only supports split preparation and feedback phase");
+        }
+{% endif %}
         ocp_nlp_solver_opts_set(config, opts, "rti_phase", &rti_phase);
     }
     else if (!strcmp(field, "qp_warm_start"))
@@ -668,6 +674,13 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
         MEX_DIM_CHECK_VEC(fun_name, field, matlab_size, acados_size);
         double qp_mu0 = (double) value[0];
         ocp_nlp_solver_opts_set(config, opts, "qp_mu0", &qp_mu0);
+    }
+    else if (!strcmp(field, "anderson_activation_threshold"))
+    {
+        acados_size = 1;
+        MEX_DIM_CHECK_VEC(fun_name, field, matlab_size, acados_size);
+        double anderson_activation_threshold = (double) value[0];
+        ocp_nlp_solver_opts_set(config, opts, "anderson_activation_threshold", &anderson_activation_threshold);
     }
     else if (!strcmp(field, "qp_print_level"))
     {

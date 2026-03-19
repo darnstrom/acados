@@ -181,6 +181,8 @@ This documentation is (most likely) not exhaustive and does not contain a full d
 
 In particular, this document does not cover the \acados{} problem formulation and interface for multi-phase OCP \cite{frey2024multi}.
 
+For a high-level overview of the structure and functionality of \acados{}, please see the original publication \cite{verschueren2020}.
+
 %You can find examples in the directory \code{<acados>/examples/acados\_matlab\_octave}.
 %The source code of the \acados{} \matlab{} interface is found in: \code{<acados>/interfaces/acados\_matlab\_octave} and should serve as a more extensive, complete and up-to-date documentation about the possibilities.
 
@@ -730,6 +732,7 @@ Note that some options of the solver can be modified after its creation. Some op
         qpDUNES & partial & \code{PARTIAL\_CONDENSING\_QPDUNES} & \cite{Frasch2015}\\
         qpOASES & full & \code{FULL\_CONDENSING\_QPOASES} & \cite{Ferreau2014}\\
         DAQP & full & \code{FULL\_CONDENSING\_DAQP} & \cite{Arnstrom2022} \\
+        Clarabel & partial & \code{PARTIAL\_CONDENSING\_CLARABEL} & \cite{Clarabel_2024} \\
         \bottomrule
         \multicolumn{3}{r}{\footnotesize * default}
     \end{tabular}

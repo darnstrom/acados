@@ -1,4 +1,11 @@
 # Developer Guide
+
+``` eval_rst
+.. meta::
+   :description: Developer guide for extending acados including contribution guidelines, memory management conventions, continuous integration, test development, regularization methods, and QP solution handling.
+   :keywords: acados development, contributing to acados, acados memory management, acados testing, CI guidelines, acados architecture, SQP regularization, QP solver development
+```
+
 This page contains additional information for people who want to extend `acados`.
 
 ## Contributing
@@ -9,6 +16,17 @@ Contributions are handled via pull requests on Github
 - Describe what you changed and why
 - Rather make minimal changes
 - Rather more commits than less
+- Add a test
+
+
+## Tests on continuous integration via Github actions (GA)
+When adding a test or example, it is useful to make it run on GA.
+To do so: edit the following files:
+- For Python: `.github/workflows/full_build.yml`
+- For MATLAB:
+  - tests: `examples/acados_matlab_octave/test/run_matlab_tests.m`
+  - examples: `examples/acados_matlab_octave/test/test_all_examples.m`
+
 
 ## Memory management in `acados`
 The following are guidelines on how memory should be assigned for an `acados` structure `astruct`.

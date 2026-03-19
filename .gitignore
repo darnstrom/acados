@@ -102,7 +102,9 @@ c_generated_code
 build/
 include/
 lib/
+bin/
 local/
+share/
 *.local
 *.dat
 octave-workspace

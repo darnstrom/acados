@@ -71,6 +71,16 @@ classdef {{ name }}_mex_solver < handle
             status = acados_mex_custom_update_{{ name }}(obj.C_ocp, data);
         end
 
+        function P = get_zoRO_Pk_matrices(obj, varargin)
+            % P = ocp. get_zoRO_Pk_matrices()       -> returns 1x(N+1) cell of P^k matrices
+            % P = ocp.get_zoRO_Pk_matrices(stage)  -> returns [nx x nx] matrix for stage
+            if nargin == 1
+                P = acados_mex_get_zoRO_Pk_{{ name }}(obj.C_ocp);
+            else
+                P = acados_mex_get_zoRO_Pk_{{ name }}(obj.C_ocp, varargin{1});
+            end
+        end
+
         function set(varargin)
             obj = varargin{1};
             field = varargin{2};
@@ -121,6 +131,17 @@ classdef {{ name }}_mex_solver < handle
             value = ocp_get(obj.C_ocp, 'constraint_violation');
         end
 
+        function dump_last_qp_to_json(obj, varargin)
+            %%% Dumps the latest QP data into a json file
+            %%% param1: filename: if not set, use model_name + '_QP.json'
+            if nargin>=2
+                filename = varargin{1};
+            else
+                filename = [obj.name, '_QP.json'];
+            end
+            ocp_dump_qp(obj.C_ocp, filename);
+        end
+
         function eval_param_sens(obj, field, stage, index)
             ocp_eval_param_sens(obj.C_ocp, field, stage, index);
         end
@@ -167,100 +188,6 @@ classdef {{ name }}_mex_solver < handle
             end
         end
 
-
-        function [] = store_iterate(varargin)
-            %%%  Stores the current iterate of the ocp solver in a json file.
-            %%% param1: filename: if not set, use model_name + timestamp + '.json'
-            %%% param2: overwrite: if false and filename exists add timestamp to filename
-
-            obj = varargin{1};
-            filename = '';
-            overwrite = false;
-
-            if nargin>=2
-                filename = varargin{2};
-                if ~isa(filename, 'char')
-                    error('filename must be a char vector, use '' ''');
-                end
-            end
-
-            if nargin==3
-                overwrite = varargin{3};
-            end
-
-            if nargin > 3
-                disp('acados_ocp.get: wrong number of input arguments (1 or 2 allowed)');
-            end
-
-            if strcmp(filename,'')
-                filename = [obj.name '_iterate.json'];
-            end
-            if ~overwrite
-                % append timestamp
-                if exist(filename, 'file')
-                    filename = filename(1:end-5);
-                    filename = [filename '_' datestr(now,'yyyy-mm-dd-HH:MM:SS') '.json'];
-                end
-            end
-            filename = fullfile(pwd, filename);
-
-            % get iterate:
-            solution = struct();
-            for i=0:obj.N
-                solution.(['x_' num2str(i)]) = obj.get('x', i);
-                solution.(['lam_' num2str(i)]) = obj.get('lam', i);
-                solution.(['sl_' num2str(i)]) = obj.get('sl', i);
-                solution.(['su_' num2str(i)]) = obj.get('su', i);
-            end
-            for i=0:obj.N-1
-                solution.(['z_' num2str(i)]) = obj.get('z', i);
-                solution.(['u_' num2str(i)]) = obj.get('u', i);
-                solution.(['pi_' num2str(i)]) = obj.get('pi', i);
-            end
-
-            acados_folder = getenv('ACADOS_INSTALL_DIR');
-            addpath(fullfile(acados_folder, 'external', 'jsonlab'));
-            savejson('', solution, filename);
-
-            json_string = savejson('', solution, 'ForceRootName', 0);
-
-            fid = fopen(filename, 'w');
-            if fid == -1, error('store_iterate: Cannot create JSON file'); end
-            fwrite(fid, json_string, 'char');
-            fclose(fid);
-
-            disp(['stored current iterate in ' filename]);
-        end
-
-
-        function [] = load_iterate(obj, filename)
-            %%%  Loads the iterate stored in json file with filename into the ocp solver.
-            acados_folder = getenv('ACADOS_INSTALL_DIR');
-            addpath(fullfile(acados_folder, 'external', 'jsonlab'));
-            filename = fullfile(pwd, filename);
-
-            if ~exist(filename, 'file')
-                error(['load_iterate: failed, file does not exist: ' filename])
-            end
-
-            solution = loadjson(filename);
-            keys = fieldnames(solution);
-
-            for k = 1:numel(keys)
-                key = keys{k};
-                key_parts = strsplit(key, '_');
-                field = key_parts{1};
-                stage = key_parts{2};
-
-                val = solution.(key);
-
-                % check if array is empty (can happen for z)
-                if numel(val) > 0
-                    obj.set(field, val, str2num(stage))
-                end
-            end
-        end
-
         function [] = reset(obj)
             acados_mex_set_{{ name }}(obj.C_ocp, 'reset', 1);
         end
@@ -278,7 +205,7 @@ classdef {{ name }}_mex_solver < handle
 
             if strcmp(field, 'stat')
                 stat = obj.get('stat');
-                {%- if solver_options.nlp_solver_type == "SQP" %}
+            {%- if solver_options.nlp_solver_type == "SQP" %}
                 fprintf('\niter\tres_stat\tres_eq\t\tres_ineq\tres_comp\tqp_stat\tqp_iter\talpha');
                 if size(stat,2)>8
                     fprintf('\tqp_res_stat\tqp_res_eq\tqp_res_ineq\tqp_res_comp');
@@ -292,20 +219,50 @@ classdef {{ name }}_mex_solver < handle
                     fprintf('\n');
                 end
                 fprintf('\n');
-                {%- else %}
-                fprintf('\niter\tqp_status\tqp_iter');
-                if size(stat,2)>3
-                    fprintf('\tqp_res_stat\tqp_res_eq\tqp_res_ineq\tqp_res_comp');
+            {%- elif solver_options.nlp_solver_type == "SQP_RTI" %}
+                header = sprintf('\niter\tqp_stat\tqp_iter');
+                {%- if solver_options.nlp_solver_ext_qp_res == 1 %}
+                header = [header, sprintf('\tqp_res_stat\tqp_res_eq\tqp_res_ineq\tqp_res_comp')];
+                {%- endif %}
+                {%- if solver_options.rti_log_residuals == 1 %}
+                header = [header, sprintf('\tres_stat\tres_eq\t\tres_ineq\tres_comp')];
+                {%- endif %}
+                fprintf('%s\n', header);
+                for jj=1:size(stat,1)
+                    line = sprintf('%d\t%d\t%d', stat(jj,1), stat(jj,2), stat(jj,3));
+                    offset = 3;
+                    {%- if solver_options.nlp_solver_ext_qp_res == 1 %}
+                    line = [line, sprintf('\t%e\t%e\t%e\t%e', stat(jj,offset+1), stat(jj,offset+2), stat(jj,offset+3), stat(jj,offset+4))];
+                    offset = offset + 4;
+                    {%- endif %}
+                    {%- if solver_options.rti_log_residuals == 1 %}
+                    line = [line, sprintf('\t%e\t%e\t%e\t%e', stat(jj,offset+1), stat(jj,offset+2), stat(jj,offset+3), stat(jj,offset+4))];
+                    {%- endif %}
+                    fprintf('%s\n', line);
                 end
                 fprintf('\n');
+            {%- elif solver_options.nlp_solver_type == "DDP" %}
                 for jj=1:size(stat,1)
-                    fprintf('%d\t%d\t\t%d', stat(jj,1), stat(jj,2), stat(jj,3));
-                    if size(stat,2)>3
-                        fprintf('\t%e\t%e\t%e\t%e', stat(jj,4), stat(jj,5), stat(jj,6), stat(jj,7));
+                    if mod(jj-1, 10) == 0
+                        fprintf('%6s | %10s | %10s | %10s | %10s | %10s | %10s | %10s\n', ...
+                            'iter.', 'objective', 'res_eq', 'res_stat', 'alpha', 'LM_reg.', 'qp_status', 'qp_iter.');
                     end
-                    fprintf('\n');
+                    fprintf('%6d | %10.4e | %10.4e | %10.4e | %10.4e | %10.4e | %10d | %10d\n', ...
+                        stat(jj,1), stat(jj,4), stat(jj,3), stat(jj,2), stat(jj,8), stat(jj,5), stat(jj,6), stat(jj,7));
                 end
-                {% endif %}
+                fprintf('\n');
+            {%- elif solver_options.nlp_solver_type == "SQP_WITH_FEASIBLE_QP" %}
+                fprintf('%5s   %10s   %10s   %10s   %10s   %8s   %6s   %8s   %6s   %8s   %6s   %10s   %8s   %8s\n', ...
+                    '#it', 'res_stat', 'res_eq', 'res_ineq', 'res_comp', 'qp1_stat', 'qp1_it', ...
+                    'qp2_stat', 'qp2_it', 'qp3_stat', 'qp3_it', 'alpha', '||pi||', '||lam||');
+                for jj=1:size(stat,1)
+                    fprintf('%5d   %10.4e   %10.4e   %10.4e   %10.4e   %8d   %6d   %8d   %6d   %8d   %6d   %10.4e   %8.2e   %8.2e\n', ...
+                        stat(jj,1), stat(jj,2), stat(jj,3), stat(jj,4), stat(jj,5), ...
+                        stat(jj,6), stat(jj,7), stat(jj,8), stat(jj,9), stat(jj,10), stat(jj,11), ...
+                        stat(jj,12), stat(jj,13), stat(jj,14));
+                end
+                fprintf('\n');
+            {%- endif %}
 
             else
                 fprintf('unsupported field in function print of acados_ocp.print, got %s', field);

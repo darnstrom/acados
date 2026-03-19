@@ -31,11 +31,14 @@
 from .acados_model import AcadosModel
 from .acados_dims import AcadosOcpDims, AcadosSimDims
 
+from .acados_ocp_qp import AcadosOcpQp
+from .acados_ocp_qp_solver import AcadosOcpQpSolver
+
 from .acados_ocp import AcadosOcp
 
 from .acados_ocp_cost import AcadosOcpCost
 from .acados_ocp_constraints import AcadosOcpConstraints
-from .acados_ocp_options import AcadosOcpOptions
+from .acados_ocp_options import AcadosOcpOptions, AcadosOcpQpOptions
 from .acados_ocp_batch_solver import AcadosOcpBatchSolver
 from .acados_ocp_iterate import AcadosOcpIterate, AcadosOcpIterates, AcadosOcpFlattenedIterate
 
@@ -57,6 +60,10 @@ from .plot_utils import latexify_plot, plot_convergence, plot_contraction_rates,
 
 from .penalty_utils import symmetric_huber_penalty, one_sided_huber_penalty, huber_loss
 
-from .mpc_utils import create_model_with_cost_state
+from .mpc_utils import create_model_with_cost_state, AcadosCostConstraintEvaluator
 
 from .zoro_description import ZoroDescription
+
+from .gnsf import *
+
+from .acados_param_manager import AcadosParamManager, AcadosParam

@@ -147,7 +147,6 @@ ocp_qp_dims *ocp_qp_dims_assign(int N, void *raw_memory)
 void ocp_qp_dims_set(void *config_, void *dims, int stage, const char *field, int* value)
 {
     char *field_copy = (char *) field;
-
     d_ocp_qp_dim_set(field_copy, stage, *value, dims);
 
     return;
@@ -606,7 +605,7 @@ void ocp_qp_res_compute_nrm_inf(ocp_qp_res *qp_res, double res[4])
     int *ng = qp_res->dim->ng;
     int *ns = qp_res->dim->ns;
 
-#if 1
+#if 0
 
     // compute infinity norms of residuals
     double tmp;
@@ -641,9 +640,7 @@ void ocp_qp_res_compute_nrm_inf(ocp_qp_res *qp_res, double res[4])
 
 #else
 
-    // XXX this should be avoided, since it does employ strucutre of the HPIPM core that may change
-    // !!!
-
+    // Note: the HPIPM vectors are stored contiguously in memory, the implementation above does not exploit this.
     // compute size of res_q, res_b, res_d and res_m
     int nvt = 0;
     int net = 0;

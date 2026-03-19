@@ -35,6 +35,7 @@ from sensitivity_utils import plot_smoothed_solution_sensitivities_results, expo
 
 with_parametric_constraint = True
 with_nonlinear_constraint = False
+cost_scale_as_extra_param = False
 
 N_horizon = 50
 T_horizon = 2.0
@@ -50,9 +51,8 @@ def solve_ocp_and_compute_sens(ocp_solver: AcadosOcpSolver, sensitivity_solver: 
     sens_u = np.zeros(np_test)
     u_opt = np.zeros(np_test)
 
-    if with_parametric_constraint:
-        n_lam_total = ocp_solver.get_flat('lam').shape[0]
-        lambda_flat = np.zeros((np_test, n_lam_total))
+    n_lam_total = ocp_solver.get_flat('lam').shape[0]
+    lambda_flat = np.zeros((np_test, n_lam_total))
 
     for i, p in enumerate(p_test):
         p_val = np.array([p])
@@ -60,27 +60,27 @@ def solve_ocp_and_compute_sens(ocp_solver: AcadosOcpSolver, sensitivity_solver: 
         ocp_solver.set_p_global_and_precompute_dependencies(p_val)
         sensitivity_solver.set_p_global_and_precompute_dependencies(p_val)
         u_opt[i] = ocp_solver.solve_for_x0(x0, fail_on_nonzero_status=False)[0]
-        status = ocp_solver.get_status()
+        status = ocp_solver.status
         # ocp_solver.print_statistics()
         if status != 0:
             ocp_solver.print_statistics()
             print(f"Solver failed with status {status} for {i}th parameter value {p} and {tau_min=}.")
             breakpoint()
 
-        iterate = ocp_solver.store_iterate_to_flat_obj()
+        iterate = ocp_solver.get_flat_iterate()
 
-        sensitivity_solver.load_iterate_from_flat_obj(iterate)
+        sensitivity_solver.set_iterate(iterate)
         sensitivity_solver.setup_qp_matrices_and_factorize()
 
         for j in range(1, N_horizon):
             # 1, 3 are indices of upper and lower multiplier for the parametric constraints
             lambda_flat[i, :] = ocp_solver.get_flat('lam')
 
-        if ocp_solver.get_status() not in [0]:
-            print(f"OCP solver returned status {ocp_solver.get_status()}.")
+        if ocp_solver.status not in [0]:
+            print(f"OCP solver returned status {ocp_solver.status}.")
             breakpoint()
-        if sensitivity_solver.get_status() not in [0, 2]:
-            print(f"sensitivity solver returned status {sensitivity_solver.get_status()}.")
+        if sensitivity_solver.status not in [0, 2]:
+            print(f"sensitivity solver returned status {sensitivity_solver.status}.")
             # breakpoint()
         # Calculate the policy gradient
         out_dict = sensitivity_solver.eval_solution_sensitivity(0, "p_global", return_sens_x=False, sanity_checks=sanity_checks)
@@ -90,7 +90,7 @@ def solve_ocp_and_compute_sens(ocp_solver: AcadosOcpSolver, sensitivity_solver: 
 
 def create_solvers(x0, use_cython=False, qp_solver_ric_alg=0,
                     verbose = True, build = True, generate = True):
-    ocp = export_parametric_ocp(x0=x0, N_horizon=N_horizon, T_horizon=T_horizon, Fmax=Fmax, qp_solver_ric_alg=1, with_parametric_constraint=with_parametric_constraint, with_nonlinear_constraint=with_nonlinear_constraint)
+    ocp = export_parametric_ocp(x0=x0, N_horizon=N_horizon, T_horizon=T_horizon, Fmax=Fmax, qp_solver_ric_alg=1, with_parametric_constraint=with_parametric_constraint, with_nonlinear_constraint=with_nonlinear_constraint, cost_scale_as_extra_param=cost_scale_as_extra_param)
 
     # create nominal solver
     if use_cython:
@@ -101,9 +101,9 @@ def create_solvers(x0, use_cython=False, qp_solver_ric_alg=0,
         ocp_solver = AcadosOcpSolver(ocp, build=build, generate=generate, json_file="parameter_augmented_acados_ocp.json", verbose=verbose)
 
     # create sensitivity solver
-    ocp = export_parametric_ocp(x0=x0, N_horizon=N_horizon, T_horizon=T_horizon, Fmax=Fmax, hessian_approx='EXACT', qp_solver_ric_alg=qp_solver_ric_alg, with_parametric_constraint=with_parametric_constraint, with_nonlinear_constraint=with_nonlinear_constraint)
+    ocp = export_parametric_ocp(x0=x0, N_horizon=N_horizon, T_horizon=T_horizon, Fmax=Fmax, hessian_approx='EXACT', qp_solver_ric_alg=qp_solver_ric_alg, with_parametric_constraint=with_parametric_constraint, with_nonlinear_constraint=with_nonlinear_constraint, cost_scale_as_extra_param=cost_scale_as_extra_param)
     # test with QP solver that does condensing: not recommended for sensitivtity solver
-    ocp.solver_options.qp_solver_cond_N = int(N_horizon/4)
+    # ocp.solver_options.qp_solver_cond_N = int(N_horizon/4)
 
     ocp.model.name = 'sensitivity_solver'
     ocp.code_export_directory = f'c_generated_code_{ocp.model.name}'
@@ -243,11 +243,11 @@ def main_plot_trajectories():
         ocp_solver.set_p_global_and_precompute_dependencies(p_val)
         sensitivity_solver.set_p_global_and_precompute_dependencies(p_val)
         u_opt[i] = ocp_solver.solve_for_x0(x0, fail_on_nonzero_status=False)[0]
-        status = ocp_solver.get_status()
+        status = ocp_solver.status
         ocp_solver.print_statistics()
 
-        iterate = ocp_solver.store_iterate_to_flat_obj()
-        sensitivity_solver.load_iterate_from_flat_obj(iterate)
+        iterate = ocp_solver.get_flat_iterate()
+        sensitivity_solver.set_iterate(iterate)
         sensitivity_solver.setup_qp_matrices_and_factorize()
         diagnostics = sensitivity_solver.qp_diagnostics()
         print(diagnostics)

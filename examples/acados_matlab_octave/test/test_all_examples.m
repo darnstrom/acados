@@ -110,8 +110,8 @@ for idx = 1:length(targets)
     % clear variables that might contain CasADi objects to avoid SWIG
     % warnings
     clear ocp_solver ocp ocp_model model sim sim_model sim_solver params
-    save(strcat(testpath, "/test_workspace.mat"))
-    setenv("LD_RUN_PATH", strcat(testpath, "/", dir, "/c_generated_code"))
+    save(fullfile(testpath, "test_workspace.mat"))
+    setenv("LD_RUN_PATH", fullfile(testpath, dir, "c_generated_code"))
 
     try
         run(targets{idx});
@@ -123,20 +123,30 @@ for idx = 1:length(targets)
         test_val = false;
     end
 
-    % use absolute path, since current directory depends on point of failure
     testpath = getenv("TEST_DIR");
-    load(strcat(testpath, "/test_workspace.mat"));
-    disp(['test', targets{idx},' success'])
+    cd(testpath);
+
+    load(fullfile(testpath, "test_workspace.mat"));
+    if test_val
+        disp(['test ', targets{idx},' was successful'])
+    end
     messages{idx} = getenv("TEST_MESSAGE");
     if contains(targets{idx},'simulink'); bdclose('all'); end
-    delete(strcat(testpath, "/test_workspace.mat"));
+    delete(fullfile(testpath, "test_workspace.mat"));
+
     % delete generated code to avoid failure in examples using similar names
-    code_gen_dir = strcat(testpath, "/", dir, "/c_generated_code");
+    code_gen_dir = fullfile(testpath, dir, "c_generated_code");
+
     if exist(code_gen_dir, 'dir')
-        rmdir(code_gen_dir, 's')
+        clear ocp_solver ocp ocp_model model sim sim_model sim_solver params
+        clear mex
+        clear functions
+        rehash
+
+        rmpath(code_gen_dir);
+        rmdir(code_gen_dir, 's');
     end
     close all;
-    % clc;
 end
 
 % clc;

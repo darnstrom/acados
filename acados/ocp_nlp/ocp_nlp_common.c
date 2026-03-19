@@ -1273,6 +1273,9 @@ void ocp_nlp_opts_initialize_default(void *config_, void *dims_, void *opts_)
     opts->warm_start_first_qp_from_nlp = false;
     opts->eval_residual_at_max_iter = false;
 
+    opts->with_anderson_acceleration = false;
+    opts->anderson_activation_threshold = 1e1;
+
     // tolerances
     opts->tol_stat = 1e-8;
     opts->tol_eq   = 1e-8;
@@ -1597,6 +1600,11 @@ void ocp_nlp_opts_set(void *config_, void *opts_, const char *field, void* value
         {
             bool* with_anderson_acceleration = (bool *) value;
             opts->with_anderson_acceleration = *with_anderson_acceleration;
+        }
+        else if (!strcmp(field, "anderson_activation_threshold"))
+        {
+            double* anderson_activation_threshold = (double *) value;
+            opts->anderson_activation_threshold = *anderson_activation_threshold;
         }
         else if (!strcmp(field, "tol_stat"))
         {
@@ -4288,7 +4296,7 @@ int ocp_nlp_perform_second_order_correction(ocp_nlp_config *config, ocp_nlp_dims
     config->regularize->correct_dual_sol(config->regularize, dims->regularize,
                                         nlp_opts->regularize, nlp_mem->regularize_mem);
 
-    // ocp_qp_out_get(qp_out, "qp_info", &qp_info_);
+    // ocp_qp_out_get(qp_out, 0, "qp_info", &qp_info_);
     // int qp_iter = qp_info_->num_iter;
 
     // save statistics of last qp solver call
@@ -4314,8 +4322,8 @@ int ocp_nlp_perform_second_order_correction(ocp_nlp_config *config, ocp_nlp_dims
     if ((qp_status!=ACADOS_SUCCESS) & (qp_status!=ACADOS_MAXITER))
     {
 #ifndef ACADOS_SILENT
-        printf("\nQP solver returned error status %d in SQP iteration %d for SOC QP.\n",
-            qp_status, nlp_mem->iter);
+        printf("\nQP solver returned error status %d (%s) in SQP iteration %d for SOC QP.\n",
+            qp_status, status_to_string(qp_status), nlp_mem->iter);
 #endif
         // if (nlp_opts->print_level > 1)
         // {
@@ -4487,6 +4495,11 @@ int ocp_nlp_solve_qp_and_correct_dual(ocp_nlp_config *config, ocp_nlp_dims *dims
     if (nlp_opts->ext_qp_res)
     {
         ocp_qp_res_compute(scaled_qp_in, scaled_qp_out, nlp_work->qp_res, nlp_work->qp_res_ws);
+        if (nlp_opts->tau_min > 0)
+        {
+            // NOTE: the high-performance way of doing it, could be done with for loop too.
+            blasfeo_daxpy(2*dims->ni_total, - nlp_opts->tau_min, scaled_qp_in->d_mask, 0, nlp_work->qp_res->res_m, 0, nlp_work->qp_res->res_m, 0);
+        }
     }
 
     // compute correct dual solution in case of Hessian regularization

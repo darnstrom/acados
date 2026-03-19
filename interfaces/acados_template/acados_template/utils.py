@@ -33,6 +33,7 @@ import json
 import os
 import shutil
 import sys
+import hashlib
 import platform
 import urllib.request
 from deprecated.sphinx import deprecated
@@ -202,6 +203,10 @@ def is_empty(x):
         raise TypeError("is_empty expects one of the following types: casadi.MX, casadi.SX, "
                         + "None, numpy array empty list, set. Got: " + str(type(x)))
 
+def is_scalar_integer(x):
+    """Check if x is a scalar integer (int or numpy integer type)"""
+    return np.isscalar(x) and isinstance(x, (int, np.integer))
+
 
 def casadi_length(x):
     if isinstance(x, (MX, SX, DM)):
@@ -214,6 +219,14 @@ def casadi_length(x):
         raise TypeError("casadi_length expects one of the following types: casadi.MX, casadi.SX."
                         + " Got: " + str(type(x)))
 
+
+def get_os_str():
+    if sys.platform == 'darwin':
+        return 'mac'
+    elif os.name == 'nt':
+        return 'pc'
+    else:
+        return 'unix'
 
 def get_shared_lib_ext():
     if sys.platform == 'darwin':
@@ -370,6 +383,8 @@ def make_object_json_dumpable(input):
         return input.tolist()
     elif isinstance(input, (DM)):
         return input.full().tolist()
+    elif is_scalar_integer(input):
+        return int(input)
     else:
         raise TypeError(f"Cannot make input of type {type(input)} dumpable.")
 
@@ -480,9 +495,18 @@ def cast_to_1d_nparray(val, name) -> np.ndarray:
     val = np.atleast_1d(np.squeeze(val))
 
     if val.ndim > 1:
-        raise ValueError(f"Expected vector-like array, got {val.shape}.")
+        raise ValueError(f"Expected vector-like array for {name}, got {val.shape}.")
 
     return val
+
+def use_int_or_cast_to_1d_nparray(val, name) -> Union[int, np.ndarray]:
+    if isinstance(val, int):
+        return val
+    else:
+        try:
+            return cast_to_1d_nparray(val, name)
+        except:
+            raise TypeError(f"{name} must be an integer or array-like type, got {type(val)}.")
 
 
 def cast_to_1d_nparray_or_casadi_symbolic(val, name) -> np.ndarray:
@@ -490,7 +514,7 @@ def cast_to_1d_nparray_or_casadi_symbolic(val, name) -> np.ndarray:
         if val.shape[0] == 1 or val.shape[1] == 1:
             return val
         else:
-            raise ValueError("Expected vector, got {val.shape}.")
+            raise ValueError(f"Expected vector-like array for {name}, got {val.shape}.")
     else:
         return cast_to_1d_nparray(val, name)
 
@@ -502,7 +526,7 @@ def cast_to_2d_nparray(val, name) -> np.ndarray:
         raise TypeError(f"Failed to cast {name} to np.array, expected array-like type got {type(val)}.")
 
     if val.ndim != 2:
-        raise ValueError(f"Expected two dimensional array, got {val.shape}.")
+        raise ValueError(f"Expected two dimensional array for {name}, got {val.shape}.")
 
     return val
 
@@ -596,28 +620,6 @@ def set_up_imported_gnsf_model(acados_ocp):
     del acados_ocp.gnsf_model
 
 
-def idx_perm_to_ipiv(idx_perm):
-    n = len(idx_perm)
-    vec = list(range(n))
-    ipiv = np.zeros(n)
-
-    print(n, idx_perm)
-    # import pdb; pdb.set_trace()
-    for ii in range(n):
-        idx0 = idx_perm[ii]
-        for jj in range(ii,n):
-            if vec[jj]==idx0:
-                idx1 = jj
-                break
-        tmp = vec[ii]
-        vec[ii] = vec[idx1]
-        vec[idx1] = tmp
-        ipiv[ii] = idx1
-
-    ipiv = ipiv-1 # C 0-based indexing
-    return ipiv
-
-
 def print_casadi_expression(f: Union[MX, SX, DM]):
     for ii in range(casadi_length(f)):
         print(f[ii,:])
@@ -630,3 +632,112 @@ def verbose_system_call(cmd, verbose=True, shell=False):
         stderr=None if verbose else STDOUT,
         shell=shell
     )
+
+def status_to_str(status):
+    status_dict = {
+        -1: "ACADOS_UNKNOWN",
+        0: "ACADOS_SUCCESS",
+        1: "ACADOS_NAN_DETECTED",
+        2: "ACADOS_MAXITER",
+        3: "ACADOS_MINSTEP",
+        4: "ACADOS_QP_FAILURE",
+        5: "ACADOS_READY",
+        6: "ACADOS_UNBOUNDED",
+        7: "ACADOS_TIMEOUT",
+        8: "ACADOS_QPSCALING_BOUNDS_NOT_SATISFIED",
+        9: "ACADOS_INFEASIBLE"
+    }
+    return status_dict.get(status, "UNKNOWN_STATUS")
+
+OCP_COMPARE_IGNORED_FIELD_PATHS = [
+    ('external_function_files_model',),
+    ('external_function_files_ocp',),
+    ('json_loaded',),
+    ('dims', 'n_global_data'),
+]
+
+def hash_class_instance(obj) -> str:
+    """Create a hash of a class instance based on its attributes."""
+    class_dict = obj.to_dict()
+
+    global OCP_COMPARE_IGNORED_FIELD_PATHS
+    for field_path in OCP_COMPARE_IGNORED_FIELD_PATHS:
+        child = class_dict
+        *path, field_to_remove = field_path
+        for p in path:
+            child = child.get(p)
+            if child is None:
+                break
+        else:
+            child.pop(field_to_remove, None)
+
+    json_str = json.dumps(class_dict, default=make_object_json_dumpable, sort_keys=True)
+    hash_md5 = hashlib.md5(json_str.encode('utf-8')).hexdigest()
+    # print(f"MD5 hash of the object: {hash_md5}")
+
+    return hash_md5
+
+def compare_ocp_to_json(acados_ocp, json):
+    """
+    Compare every entry of an OCP object to a JSON dict, ignoring certain fields.
+    
+    Args:
+        acados_ocp: OCP object with a to_dict() method
+        json: JSON dict to compare against
+        
+    Returns:
+        List of field paths that do not match
+    """
+    ocp_dict = acados_ocp.to_dict()
+
+    global OCP_COMPARE_IGNORED_FIELD_PATHS
+    for field_path in OCP_COMPARE_IGNORED_FIELD_PATHS:
+        child = ocp_dict
+        *path, field_to_remove = field_path
+        for p in path:
+            child = child.get(p)
+            if child is None:
+                break
+        else:
+            child.pop(field_to_remove, None)
+
+    mismatched_fields = []
+
+    def compare_recursive(ocp_data, json_data, path=""):
+        """
+        Recursively compare ocp_data and json_data.
+        Collects mismatched field paths in mismatched_fields.
+        """
+        if isinstance(ocp_data, dict) and isinstance(json_data, dict):
+            for key in ocp_data:
+                current_path = f"{path}.{key}" if path else key
+                if key not in json_data:
+                    mismatched_fields.append(current_path)
+                else:
+                    compare_recursive(ocp_data[key], json_data[key], current_path)
+        elif isinstance(ocp_data, (list, tuple)) and isinstance(json_data, (list, tuple)):
+            if len(ocp_data) != len(json_data):
+                mismatched_fields.append(path)
+            else:
+                for i, (ocp_item, json_item) in enumerate(zip(ocp_data, json_data)):
+                    current_path = f"{path}[{i}]"
+                    compare_recursive(ocp_item, json_item, current_path)
+        else:
+            # numpy arrays and CasADi DM objects for comparison
+            try:
+                ocp_value = make_object_json_dumpable(ocp_data) if isinstance(ocp_data, (np.ndarray, DM)) else ocp_data
+                json_value = make_object_json_dumpable(json_data) if isinstance(json_data, (np.ndarray, DM)) else json_data
+                
+                if ocp_value != json_value:
+                    mismatched_fields.append(path)
+            except TypeError:
+                if ocp_data != json_data:
+                    mismatched_fields.append(path)
+    
+    compare_recursive(ocp_dict, json)
+    
+    return mismatched_fields
+
+def is_positive_definite(A, tol=1e-10):
+  E = np.linalg.eigvalsh(A)
+  return np.all(E > tol)

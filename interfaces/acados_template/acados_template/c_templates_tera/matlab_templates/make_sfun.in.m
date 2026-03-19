@@ -52,6 +52,7 @@
   {% set nu_max = dims.nu %}
   {% set ns_values = [dims.ns_0, dims.ns, dims.ns_e] %}
   {%- set ns_max = ns_values | sort | last %}
+  {% set_global nz_total = dims.nz * (solver_options.N_horizon) %}
 {% else %}
   {% set dims_0 = phases_dims | first %}
   {% set cost_0 = cost | first %}
@@ -132,7 +133,7 @@ SOURCES = { ...
             'acados_solver_{{ name }}.c'
           };
 
-INC_PATH = '{{ acados_include_path }}';
+INC_PATH = '{{ code_gen_opts.acados_include_path }}';
 
 INCS = {['-I', fullfile(INC_PATH, 'blasfeo', 'include')], ...
         ['-I', fullfile(INC_PATH, 'hpipm', 'include')], ...
@@ -168,17 +169,17 @@ CFLAGS = [ CFLAGS, ' -DACADOS_WITH_HPMPC ' ];
 COMPDEFINES = [ COMPDEFINES, ' -DACADOS_WITH_HPMPC ' ];
 {% endif %}
 
-LIB_PATH = ['-L', fullfile('{{ acados_lib_path }}')];
+LIB_PATH = ['-L', fullfile('{{ code_gen_opts.acados_lib_path }}')];
 
 LIBS = {'-lacados', '-lhpipm', '-lblasfeo'};
 
 % acados linking libraries and flags
-{%- if acados_link_libs and os and os == "pc" %}
-LDFLAGS = [LDFLAGS ' {{ acados_link_libs.openmp }}'];
-COMPFLAGS = [COMPFLAGS ' {{ acados_link_libs.openmp }}'];
-LIBS{end+1} = '{{ acados_link_libs.qpoases }}';
-LIBS{end+1} = '{{ acados_link_libs.hpmpc }}';
-LIBS{end+1} = '{{ acados_link_libs.osqp }}';
+{%- if code_gen_opts.acados_link_libs and code_gen_opts.os and code_gen_opts.os == "pc" %}
+LDFLAGS = [LDFLAGS ' {{ code_gen_opts.acados_link_libs.openmp }}'];
+COMPFLAGS = [COMPFLAGS ' {{ code_gen_opts.acados_link_libs.openmp }}'];
+LIBS{end+1} = '{{ code_gen_opts.acados_link_libs.qpoases }}';
+LIBS{end+1} = '{{ code_gen_opts.acados_link_libs.hpmpc }}';
+LIBS{end+1} = '{{ code_gen_opts.acados_link_libs.osqp }}';
 {%- else %}
     {% if solver_options.qp_solver is containing("QPOASES") %}
 LIBS{end+1} = '-lqpOASES_e';
@@ -457,6 +458,15 @@ i_in = i_in + 1;
 {%- endfor %}
 {%- endif -%}
 
+{# ---- Optional zoRO payload input to zoRO custom_update ---- #}
+{%- if custom_update_filename != "" and simulink_opts.inputs.zoRO_payload %}
+    {%- set port_label = "zoRO_payload" %}
+    {%- set port_size  = zoro_description.data_size %}
+    input_note = strcat(input_note, num2str(i_in), ') {{ port_label }} - vector forwarded to custom_update_function, size [{{ port_size }}]\n ');
+    sfun_input_names = [sfun_input_names; '{{ port_label }} [{{ port_size }}]'];
+    i_in = i_in + 1;
+{%- endif %}
+
 fprintf(input_note)
 
 disp(' ')
@@ -568,6 +578,28 @@ sfun_output_names = [sfun_output_names; 'sqp_iter'];
 i_out = i_out + 1;
 output_note = strcat(output_note, num2str(i_out), ') parameter trajectory\n ');
 sfun_output_names = [sfun_output_names; 'parameter_traj [{{ np_total }}]'];
+{%- endif %}
+
+{# ---- Optional P^k output from zoRO custom_update ---- #}
+{%- if custom_update_filename != "" and simulink_opts.outputs.zoRO_Pk_matrices %}
+    {%- set nx0 = dims_0.nx %}
+    {%- set Np  = solver_options.N_horizon + 1 %}
+    {%- set P_size = nx0 * nx0 * Np %}
+    i_out = i_out + 1;
+    output_note = strcat(output_note, num2str(i_out), ...
+        ') P_matrices, concatenation of col-major P^k for k = 0,...,N, size [{{ P_size }}]\n ');
+    sfun_output_names = [sfun_output_names; 'zoRO_Pk [{{ P_size }}]'];
+{%- endif %}
+
+{%- if custom_update_filename != "" and simulink_opts.outputs.zoRO_K_matrices %}
+    {%- set nx0 = dims_0.nx %}
+    {%- set nu0 = dims_0.nu %}
+    {%- set Nk  = solver_options.N_horizon %}
+    {%- set K_size = nu0 * nx0 * Nk %}
+    i_out = i_out + 1;
+    output_note = strcat(output_note, num2str(i_out), ...
+        ') K_matrices, concatenation of col-major K^k for k = 0,...,N-1, size [{{ K_size }}]\n ');
+    sfun_output_names = [sfun_output_names; 'zoRO_Kk [{{ K_size }}]'];
 {%- endif %}
 
 fprintf(output_note)

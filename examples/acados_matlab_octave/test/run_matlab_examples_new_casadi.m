@@ -31,6 +31,7 @@
 
 clearvars; clc; close all;
 
+warning('off','all');
 
 % list the examples you would like to test
 targets = {
@@ -40,6 +41,7 @@ targets = {
     '../mocp_transition_example/main_parametric_mocp.m';
     '../pendulum_on_cart_model/nonlinear_constraint_test.m';
     '../dense_nlp/test_qpscaling.m';
+    '../furuta_pendulum/anderson_convergence_experiment.m';
 };
 
 
@@ -62,7 +64,8 @@ for idx = 1:length(targets)
         test_val = true;
     catch exception
         setenv("TEST_MESSAGE", exception.message)
-        warning(exception.message);
+        disp(['test ', targets{idx}, ' failed!'])
+        disp(exception.message);
         clear exception
         test_val = false;
     end

@@ -43,6 +43,11 @@
 #include "blasfeo_d_blasfeo_api.h"
 
 
+// number of tightened path constraints
+#define NCT {{ zoro_description.nlbu_t + zoro_description.nlbx_t + zoro_description.nlg_t + zoro_description.nlh_t + zoro_description.nubu_t + zoro_description.nubx_t + zoro_description.nug_t + zoro_description.nuh_t }}
+// number of tightened terminal constraints
+#define NCT_E {{zoro_description.nlbx_e_t + zoro_description.nlg_e_t + zoro_description.nlh_e_t + zoro_description.nubx_e_t + zoro_description.nug_e_t + zoro_description.nuh_e_t}}
+
 typedef struct custom_memory
 {
     // covariance matrics
@@ -68,6 +73,31 @@ typedef struct custom_memory
     struct blasfeo_dmat Ch_e_mat;                        // shape = (nh_e, nx)
     // feedback gain matrix
     struct blasfeo_dmat K_mat;                           // shape = (nu, nx)
+
+    {%- if (solver_options.sens_forw_p) and (zoro_description.nonlinear_uncertainty_mode != "NONE" or zoro_description.input_Sigma_p or zoro_description.input_Sigma_p_diag) %}
+        // parameter covariance and parameter-sensitivity propagation
+        struct blasfeo_dmat Sigma_p_mat;      // shape = (np, np)
+    {%- if zoro_description.nonlinear_uncertainty_mode != "NONE" %}
+        struct blasfeo_dmat S_p_mat;          // shape = (nx, np)
+    {%- if zoro_description.nonlinear_uncertainty_mode == "CONSTANT" %}
+        struct blasfeo_dmat Pi_mat;           // shape = (nx, np)
+        struct blasfeo_dmat temp_Pi_mat;      // shape = (nx, np)
+        struct blasfeo_dmat P_w_mat;          // shape = (nx, nx)
+    {%- endif %}
+    {%- endif %}
+    {%- endif %}
+
+    struct blasfeo_dmat dct_dux;             // shape = (nlbu_t + nlbx_t + nlg_t + nlh_t + nubu_t + nubx_t + nug_t + nuh_t, nx + nu)
+    // Jacobian of tightened constraints wrt [u,x].
+    struct blasfeo_dmat scaled_dct_dux;      // shape = (nlbu_t + nlbx_t + nlg_t + nlh_t + nubu_t + nubx_t + nug_t + nuh_t, nx + nu)
+
+    struct blasfeo_dmat dcet_dx;           // shape = (nlbx_e_t + nlg_e_t + nlh_e_t + nubx_e_t + nug_e_t + nuh_e_t,       nx)
+    // Jacobian of tightened constraints wrt x at terminal node
+
+    struct blasfeo_dmat scaled_dcet_dx;    // shape = (nlbx_e_t + nlg_e_t + nlh_e_t + nubx_e_t + nug_e_t + nuh_e_t,       nx)
+    struct blasfeo_dvec *ineq_backoff_sq_buffer;         // shape = N * (nbu + nbx + ng + nh,) + (nbx_e + ng_e + nh_e, )
+    struct blasfeo_dvec ricc_ones;         // shape = (nbu + nbx + ng + nh,) + (nbx_e + ng_e + nh_e, )
+
     // AK = A - B@K
     struct blasfeo_dmat AK_mat;                          // shape = (nx, nx)
     // A@P_k
@@ -75,10 +105,39 @@ typedef struct custom_memory
     // K@P_k, K@P_k@K^T
     struct blasfeo_dmat temp_KP_mat;                     // shape = (nu, nx)
     struct blasfeo_dmat temp_KPK_mat;                    // shape = (nu, nu)
-    // C + D @ K, (C + D @ K) @ P_k
+    // C - D @ K, (C - D @ K) @ P_k
     struct blasfeo_dmat temp_CaDK_mat;                   // shape = (ngh_me_max, nx)
     struct blasfeo_dmat temp_CaDKmP_mat;                 // shape = (ngh_me_max, nx)
     struct blasfeo_dmat temp_beta_mat;                   // shape = (ngh_me_max, ngh_me_max)
+
+{%- if (solver_options.sens_forw_p) and zoro_description.nonlinear_uncertainty_mode != "NONE" %}
+    // SpSig = S_p@Sigma_p
+    struct blasfeo_dmat temp_SpSig_mat;   // shape = (nx, np)
+    // S_p@Sigma_p@S_p^T + GWG (or Π Σ_p Π^T in CONSTANT mode)
+    struct blasfeo_dmat temp_GSp_mat;     // shape = (nx, nx)
+{%- endif %}
+
+    // matrices for Riccati recursion
+    struct blasfeo_dmat *riccati_K_buffer;               // shape = N * (nu, nx)
+    struct blasfeo_dmat riccati_Q_mat;                   // shape = (nx, nx)
+    struct blasfeo_dmat riccati_Q_const;              // shape = (nx, nx)
+    struct blasfeo_dmat riccati_Q_const_e;            // shape = (nx, nx)
+    struct blasfeo_dmat riccati_R_mat;                   // shape = (nu, nu)
+    struct blasfeo_dmat riccati_R_const;              // shape = (nu, nu)
+    struct blasfeo_dmat riccati_S_mat;                   // shape = (nu, nx)
+    struct blasfeo_dmat riccati_S_const;              // shape = (nu, nx)
+
+    struct blasfeo_dmat temp_riccati_P_mat;              // shape = (nx, nx)
+    struct blasfeo_dmat temp_riccati_P_plus_mat;         // shape = (nx, nx)
+    // B.T @ P_k
+    struct blasfeo_dmat temp_riccati_BP_mat;             // shape = (nu, nx)
+    // R + B.T @ P_k @ B
+    struct blasfeo_dmat temp_riccati_RaBPB_mat;          // shape = (nu, nu)
+    // S + B.T @ P_k @ A
+    struct blasfeo_dmat temp_riccati_SaBPA_mat;          // shape = (nu, nx)
+    struct blasfeo_dmat temp_riccati_chol_mat;           // shape = (nu, nu)
+    struct blasfeo_dmat temp_riccati_cholinvSaBPA_mat;   // shape = (nu, nx)
+    struct blasfeo_dmat temp_riccati_AP_mat;             // shape = (nx, nx)
 
     double *d_A_mat;                                     // shape = (nx, nx)
     double *d_B_mat;                                     // shape = (nx, nu)
@@ -89,6 +148,11 @@ typedef struct custom_memory
     double *d_Dgh_mat;                                   // shape = (ng+nh, nu)
     double *d_Cgh_e_mat;                                 // shape = (ng_e+nh_e, nx)
     double *d_state_vec;
+
+{%- if (solver_options.sens_forw_p) and zoro_description.nonlinear_uncertainty_mode != "NONE" %}
+    double *d_S_p;                                      // shape = (nx*np,) dense S_p stage buffer
+{%- endif %}
+
     // upper and lower bounds on state variables
     double *d_lbx;                                       // shape = (nbx,)
     double *d_ubx;                                       // shape = (nbx,)
@@ -125,6 +189,9 @@ typedef struct custom_memory
     double *d_uh_tightened;                              // shape = (nh,)
     double *d_lh_e_tightened;                            // shape = (nh_e,)
     double *d_uh_e_tightened;                            // shape = (nh_e,)
+    // ineq constraint values, used for riccati
+    double *d_ineq_val;                                  // shape = (nbu + nbx + ng + nh, ), actually only the max of (nbu, nbx, ng + nh) is needed
+    double *d_ineq_e_val;                                // shape = (nbx_e + ng_e + nh_e, )
 
     int *idxbx;                                          // shape = (nbx,)
     int *idxbu;                                          // shape = (nbu,)
@@ -132,7 +199,10 @@ typedef struct custom_memory
 
     int offset_W_diag;
     int offset_W_add_diag;
+    int offset_Sigma_p;
     int offset_P_out;
+
+    double tau;
 
     void *raw_memory; // Pointer to allocated memory, to be used for freeing
 } custom_memory;
@@ -149,6 +219,7 @@ static int custom_memory_calculate_size(ocp_nlp_config *nlp_config, ocp_nlp_dims
     int nx = {{ dims.nx }};
     int nu = {{ dims.nu }};
     int nw = {{ zoro_description.nw }};
+    int np = {{ dims.np }}; // Number of zoRO-specific uncertain parameters
 
     int ng = {{ dims.ng }};
     int nh = {{ dims.nh }};
@@ -179,15 +250,15 @@ static int custom_memory_calculate_size(ocp_nlp_config *nlp_config, ocp_nlp_dims
     acados_size_t size = sizeof(custom_memory);
     size += nbx * sizeof(int);
     /* blasfeo structs */
-    size += (N + 1) * sizeof(struct blasfeo_dmat);
+    size += (2 * N + 1) * sizeof(struct blasfeo_dmat); // uncertainty_matrix_buffer, riccati_K_buffer
     /* blasfeo mem: mat */
     size += (N + 1) * blasfeo_memsize_dmat(nx, nx); // uncertainty_matrix_buffer
     size += blasfeo_memsize_dmat(nw, nw);           // W_mat
     size += 2 * blasfeo_memsize_dmat(nx, nw);       // unc_jac_G_mat, temp_GW_mat
     size += 4 * blasfeo_memsize_dmat(nx, nx);       // GWG_mat, A_mat, AK_mat, temp_AP_mat
     size += blasfeo_memsize_dmat(nx, nu);           // B_mat
-    size += 2 * blasfeo_memsize_dmat(nu, nx);       // K_mat, temp_KP_mat
-    size += blasfeo_memsize_dmat(nu, nu);           // temp_KPK_mat
+    size += 2 * blasfeo_memsize_dmat(nu, nx); // K_mat, temp_KP_mat
+    size += blasfeo_memsize_dmat(nu, nu);       // temp_KPK_mat
     size += blasfeo_memsize_dmat(ng, nx);           // Cg_mat
     size += blasfeo_memsize_dmat(ng, nu);           // Dg_mat
     size += blasfeo_memsize_dmat(ng_e, nx);         // Cg_e_mat
@@ -199,6 +270,36 @@ static int custom_memory_calculate_size(ocp_nlp_config *nlp_config, ocp_nlp_dims
     size += blasfeo_memsize_dmat(ngh_me_max, ngh_me_max);       // temp_beta_mat
     // NOTE: Covariance matrix of the additive noise (used if input_W_add_diag)
     size += blasfeo_memsize_dmat(nw, nw);  // W_stage_mat
+    // Allocate Sigma_p memory if inputs are requested, even if mode is NONE
+{%- if (solver_options.sens_forw_p) and (zoro_description.nonlinear_uncertainty_mode != "NONE" or zoro_description.input_Sigma_p or zoro_description.input_Sigma_p_diag) %}
+    size += blasfeo_memsize_dmat(np, np);  // Sigma_p_mat
+    // Only allocate computation buffers if mode != NONE
+{%- if zoro_description.nonlinear_uncertainty_mode != "NONE" %}
+    size += blasfeo_memsize_dmat(nx, np);  // S_p_mat
+    size += blasfeo_memsize_dmat(nx, np);  // temp_SpSig_mat
+    size += blasfeo_memsize_dmat(nx, nx);  // temp_GSp_mat
+{%- if zoro_description.nonlinear_uncertainty_mode == "CONSTANT" %}
+    size += blasfeo_memsize_dmat(nx, np);  // Pi_mat
+    size += blasfeo_memsize_dmat(nx, np);  // temp_Pi_mat
+    size += blasfeo_memsize_dmat(nx, nx);  // P_w_mat
+{%- endif %}
+{%- endif %}
+    size += nx * np * sizeof(double);      // d_S_p
+{%- endif %}
+
+{%- if zoro_description.feedback_optimization_mode != "CONSTANT_FEEDBACK" %}
+    // Riccati specific memory
+    size += 6 * blasfeo_memsize_dmat(nx, nx);       // riccati_Q_mat, riccati_Q_const, riccati_Q_const_e, temp_riccati_P_mat, temp_riccati_P_plus_mat, temp_riccati_AP_mat
+    size += (N + 5) * blasfeo_memsize_dmat(nu, nx); // riccati_K_buffer, riccati_S_mat, riccati_S_const, temp_riccati_BP_mat, temp_riccati_SaBPA_mat, temp_riccati_cholinvSaBPA_mat
+    size += 4 * blasfeo_memsize_dmat(nu, nu);       // riccati_R_mat, riccati_R_const, temp_riccati_RaBPB_mat, temp_riccati_chol_mat
+    size += 2 * blasfeo_memsize_dmat(NCT, nx + nu);  // dct_dux, scaled_dct_dux
+    size += 2 * blasfeo_memsize_dmat(NCT_E, nx);  // dcet_dx, scaled_dcet_dx
+{% endif %}
+
+    size += (N+1) * sizeof(struct blasfeo_dvec);                // ineq_backoff_sq_buffer
+    size += N * blasfeo_memsize_dvec(nbu + nbx + ng + nh);      // ineq_backoff_sq_buffer--stage
+    size += blasfeo_memsize_dvec(nbx_e + ng_e + nh_e);          // ineq_backoff_sq_buffer--terminal
+    size += blasfeo_memsize_dvec(nbu + nbx + ng + nh + nbx_e + ng_e + nh_e);          // ricc_ones
 
     /* blasfeo mem: vec */
     /* Arrays */
@@ -211,8 +312,8 @@ static int custom_memory_calculate_size(ocp_nlp_config *nlp_config, ocp_nlp_dims
     // d_state_vec
     size += nx *sizeof(double);
     // constraints and tightened constraints
-    size += 4 * (nbx + nbu + ng + nh)*sizeof(double);
-    size += 4 * (nbx_e + ng_e + nh_e)*sizeof(double);
+    size += 5 * (nbx + nbu + ng + nh)*sizeof(double);
+    size += 5 * (nbx_e + ng_e + nh_e)*sizeof(double);
     size += (nbx + nbu + nbx_e)*sizeof(int);        // idxbx, idxbu, idxbx_e
 
     size += 1 * 8; // initial alignment
@@ -229,6 +330,7 @@ static custom_memory *custom_memory_assign(ocp_nlp_config *nlp_config, ocp_nlp_d
     int nx = {{ dims.nx }};
     int nu = {{ dims.nu }};
     int nw = {{ zoro_description.nw }};
+    int np = {{ dims.np }};
 
     int ng = {{ dims.ng }};
     int nh = {{ dims.nh }};
@@ -247,6 +349,8 @@ static custom_memory *custom_memory_assign(ocp_nlp_config *nlp_config, ocp_nlp_d
 
     align_char_to(8, &c_ptr);
     assign_and_advance_blasfeo_dmat_structs(N+1, &mem->uncertainty_matrix_buffer, &c_ptr);
+    assign_and_advance_blasfeo_dmat_structs(N, &mem->riccati_K_buffer, &c_ptr);
+    assign_and_advance_blasfeo_dvec_structs(N+1, &mem->ineq_backoff_sq_buffer, &c_ptr);
 
     align_char_to(64, &c_ptr);
 
@@ -272,6 +376,7 @@ static custom_memory *custom_memory_assign(ocp_nlp_config *nlp_config, ocp_nlp_d
     assign_and_advance_blasfeo_dmat_mem(nh, nu, &mem->Dh_mat, &c_ptr);
     assign_and_advance_blasfeo_dmat_mem(nh_e, nx, &mem->Ch_e_mat, &c_ptr);
     assign_and_advance_blasfeo_dmat_mem(nu, nx, &mem->K_mat, &c_ptr);
+
     assign_and_advance_blasfeo_dmat_mem(nx, nx, &mem->AK_mat, &c_ptr);
     assign_and_advance_blasfeo_dmat_mem(nx, nx, &mem->temp_AP_mat, &c_ptr);
     assign_and_advance_blasfeo_dmat_mem(nu, nx, &mem->temp_KP_mat, &c_ptr);
@@ -279,6 +384,56 @@ static custom_memory *custom_memory_assign(ocp_nlp_config *nlp_config, ocp_nlp_d
     assign_and_advance_blasfeo_dmat_mem(ngh_me_max, nx, &mem->temp_CaDK_mat, &c_ptr);
     assign_and_advance_blasfeo_dmat_mem(ngh_me_max, nx, &mem->temp_CaDKmP_mat, &c_ptr);
     assign_and_advance_blasfeo_dmat_mem(ngh_me_max, ngh_me_max, &mem->temp_beta_mat, &c_ptr);
+
+{%- if (solver_options.sens_forw_p) and (zoro_description.nonlinear_uncertainty_mode != "NONE" or zoro_description.input_Sigma_p or zoro_description.input_Sigma_p_diag) %}
+    assign_and_advance_blasfeo_dmat_mem(np, np, &mem->Sigma_p_mat,   &c_ptr);
+{%- if zoro_description.nonlinear_uncertainty_mode != "NONE" %}
+    assign_and_advance_blasfeo_dmat_mem(nx, np, &mem->S_p_mat,       &c_ptr);
+    assign_and_advance_blasfeo_dmat_mem(nx, np, &mem->temp_SpSig_mat,&c_ptr);
+    assign_and_advance_blasfeo_dmat_mem(nx, nx, &mem->temp_GSp_mat,  &c_ptr);
+{%- if zoro_description.nonlinear_uncertainty_mode == "CONSTANT" %}
+    assign_and_advance_blasfeo_dmat_mem(nx, np, &mem->Pi_mat,        &c_ptr);
+    assign_and_advance_blasfeo_dmat_mem(nx, np, &mem->temp_Pi_mat,   &c_ptr);
+    assign_and_advance_blasfeo_dmat_mem(nx, nx, &mem->P_w_mat,       &c_ptr);
+{%- endif %}
+{%- endif %}
+{%- endif %}
+
+{%- if zoro_description.feedback_optimization_mode != "CONSTANT_FEEDBACK" %}
+    for (int ii = 0; ii < N; ii++)
+    {
+        assign_and_advance_blasfeo_dmat_mem(nu, nx, &mem->riccati_K_buffer[ii], &c_ptr);
+    }
+    assign_and_advance_blasfeo_dmat_mem(nx, nx, &mem->riccati_Q_mat, &c_ptr);
+    assign_and_advance_blasfeo_dmat_mem(nx, nx, &mem->riccati_Q_const, &c_ptr);
+    assign_and_advance_blasfeo_dmat_mem(nx, nx, &mem->riccati_Q_const_e, &c_ptr);
+    assign_and_advance_blasfeo_dmat_mem(nu, nu, &mem->riccati_R_mat, &c_ptr);
+    assign_and_advance_blasfeo_dmat_mem(nu, nu, &mem->riccati_R_const, &c_ptr);
+    assign_and_advance_blasfeo_dmat_mem(nu, nx, &mem->riccati_S_mat, &c_ptr);
+    assign_and_advance_blasfeo_dmat_mem(nu, nx, &mem->riccati_S_const, &c_ptr);
+
+    assign_and_advance_blasfeo_dmat_mem(nx, nx, &mem->temp_riccati_P_mat, &c_ptr);
+    assign_and_advance_blasfeo_dmat_mem(nx, nx, &mem->temp_riccati_P_plus_mat, &c_ptr);
+    assign_and_advance_blasfeo_dmat_mem(nx, nx, &mem->temp_riccati_AP_mat, &c_ptr);
+    assign_and_advance_blasfeo_dmat_mem(nu, nx, &mem->temp_riccati_BP_mat, &c_ptr);
+    assign_and_advance_blasfeo_dmat_mem(nu, nu, &mem->temp_riccati_RaBPB_mat, &c_ptr);
+    assign_and_advance_blasfeo_dmat_mem(nu, nx, &mem->temp_riccati_SaBPA_mat, &c_ptr);
+    assign_and_advance_blasfeo_dmat_mem(nu, nu, &mem->temp_riccati_chol_mat, &c_ptr);
+    assign_and_advance_blasfeo_dmat_mem(nu, nx, &mem->temp_riccati_cholinvSaBPA_mat, &c_ptr);
+    assign_and_advance_blasfeo_dmat_mem(NCT, nx + nu, &mem->dct_dux, &c_ptr);
+    assign_and_advance_blasfeo_dmat_mem(NCT, nx + nu, &mem->scaled_dct_dux, &c_ptr);
+    assign_and_advance_blasfeo_dmat_mem(NCT_E, nx, &mem->dcet_dx, &c_ptr);
+    assign_and_advance_blasfeo_dmat_mem(NCT_E, nx, &mem->scaled_dcet_dx, &c_ptr);
+{% endif %}
+
+    for (int ii = 0; ii < N; ii++)
+    {
+        assign_and_advance_blasfeo_dvec_mem(nbu + nbx + ng + nh, &mem->ineq_backoff_sq_buffer[ii], &c_ptr);
+    }
+    assign_and_advance_blasfeo_dvec_mem(nbx_e + ng_e + nh_e, &mem->ineq_backoff_sq_buffer[N], &c_ptr);
+
+    assign_and_advance_blasfeo_dvec_mem(nbu + nbx + ng + nh + nbx_e + ng_e + nh_e, &mem->ricc_ones, &c_ptr);
+    blasfeo_dvecse(nbu + nbx + ng + nh + nbx_e + ng_e + nh_e, 1.0, &mem->ricc_ones, 0);
 
     assign_and_advance_double(nx*nx, &mem->d_A_mat, &c_ptr);
     assign_and_advance_double(nx*nu, &mem->d_B_mat, &c_ptr);
@@ -289,6 +444,9 @@ static custom_memory *custom_memory_assign(ocp_nlp_config *nlp_config, ocp_nlp_d
     assign_and_advance_double((ng + nh)*nu, &mem->d_Dgh_mat, &c_ptr);
     assign_and_advance_double((ng_e + nh_e)*nx, &mem->d_Cgh_e_mat, &c_ptr);
     assign_and_advance_double(nx, &mem->d_state_vec, &c_ptr);
+{%- if (solver_options.sens_forw_p) and zoro_description.nonlinear_uncertainty_mode != "NONE" %}
+    assign_and_advance_double(nx*np, &mem->d_S_p, &c_ptr);
+{%- endif %}
     assign_and_advance_double(nbx, &mem->d_lbx, &c_ptr);
     assign_and_advance_double(nbx, &mem->d_ubx, &c_ptr);
     assign_and_advance_double(nbx_e, &mem->d_lbx_e, &c_ptr);
@@ -317,6 +475,8 @@ static custom_memory *custom_memory_assign(ocp_nlp_config *nlp_config, ocp_nlp_d
     assign_and_advance_double(nh, &mem->d_uh_tightened, &c_ptr);
     assign_and_advance_double(nh_e, &mem->d_lh_e_tightened, &c_ptr);
     assign_and_advance_double(nh_e, &mem->d_uh_e_tightened, &c_ptr);
+    assign_and_advance_double(nbu + nbx + ng + nh, &mem->d_ineq_val, &c_ptr);
+    assign_and_advance_double(nbx_e + ng_e + nh_e, &mem->d_ineq_e_val, &c_ptr);
 
     assign_and_advance_int(nbx, &mem->idxbx, &c_ptr);
     assign_and_advance_int(nbu, &mem->idxbu, &c_ptr);
@@ -335,11 +495,19 @@ static custom_memory *custom_memory_assign(ocp_nlp_config *nlp_config, ocp_nlp_d
     mem->offset_W_add_diag += nw;  // W_diag
 {% endif %}
 
-    mem->offset_P_out = mem->offset_W_add_diag;
+    mem->offset_Sigma_p = mem->offset_W_add_diag;
 {%- if zoro_description.input_W_add_diag %}
-    mem->offset_P_out += N * nw;
+    mem->offset_Sigma_p += N * nw;
 {% endif %}
 
+    mem->offset_P_out = mem->offset_Sigma_p;
+{%- if zoro_description.input_Sigma_p_diag %}
+    mem->offset_P_out += np;
+{%- elif zoro_description.input_Sigma_p %}
+    mem->offset_P_out += np*np;
+{% endif %}
+
+    mem->tau = 1.0;
 
     assert((char *) raw_memory + custom_memory_calculate_size(nlp_config, nlp_dims) >= c_ptr);
     mem->raw_memory = raw_memory;
@@ -372,6 +540,7 @@ static void custom_val_init_function(ocp_nlp_dims *nlp_dims, ocp_nlp_in *nlp_in,
     int nx = {{ dims.nx }};
     int nu = {{ dims.nu }};
     int nw = {{ zoro_description.nw }};
+    int np = {{ dims.np }};
 
     int ng = {{ dims.ng }};
     int nh = {{ dims.nh }};
@@ -466,12 +635,123 @@ static void custom_val_init_function(ocp_nlp_dims *nlp_dims, ocp_nlp_in *nlp_in,
     {%- endfor %}
 {%- endfor %}
 
+    /* Initialize the Sigma_p matrix */
+{%- if (solver_options.sens_forw_p) and zoro_description.nonlinear_uncertainty_mode != "NONE" %}
+{%- for ir in range(end=dims.np) %}
+    {%- for ic in range(end=dims.np) %}
+    blasfeo_dgein1({{zoro_description.Sigma_p_mat[ir][ic]}}, &custom_mem->Sigma_p_mat, {{ir}}, {{ic}});
+    {%- endfor %}
+{%- endfor %}
+{%- endif %}
+
     /* Initialize the feedback gain matrix */
 {%- for ir in range(end=dims.nu) %}
     {%- for ic in range(end=dims.nx) %}
     blasfeo_dgein1({{zoro_description.fdbk_K_mat[ir][ic]}}, &custom_mem->K_mat, {{ir}}, {{ic}});
     {%- endfor %}
 {%- endfor %}
+
+{%- if not zoro_description.feedback_optimization_mode == "CONSTANT_FEEDBACK" %}
+{%- for ir in range(end=dims.nx) %}
+    {%- for ic in range(end=dims.nx) %}
+    blasfeo_dgein1({{zoro_description.riccati_Q_const[ir][ic]}}, &custom_mem->riccati_Q_const, {{ir}}, {{ic}});
+    {%- endfor %}
+{%- endfor %}
+{%- for ir in range(end=dims.nx) %}
+    {%- for ic in range(end=dims.nx) %}
+    blasfeo_dgein1({{zoro_description.riccati_Q_const_e[ir][ic]}}, &custom_mem->riccati_Q_const_e, {{ir}}, {{ic}});
+    {%- endfor %}
+{%- endfor %}
+{%- for ir in range(end=dims.nu) %}
+    {%- for ic in range(end=dims.nu) %}
+    blasfeo_dgein1({{zoro_description.riccati_R_const[ir][ic]}}, &custom_mem->riccati_R_const, {{ir}}, {{ic}});
+    {%- endfor %}
+{%- endfor %}
+{%- for ir in range(end=dims.nu) %}
+    {%- for ic in range(end=dims.nx) %}
+    blasfeo_dgein1({{zoro_description.riccati_S_const[ir][ic]}}, &custom_mem->riccati_S_const, {{ir}}, {{ic}});
+    {%- endfor %}
+{%- endfor %}
+    // initialize riccati_Q_mat, riccati_R_mat, riccati_S_mat <- they dont change for RICCATI_CONSTANT_COST
+    blasfeo_dgecp(nx, nx, &custom_mem->riccati_Q_const, 0, 0, &custom_mem->riccati_Q_mat, 0, 0);
+    blasfeo_dgecp(nu, nu, &custom_mem->riccati_R_const, 0, 0, &custom_mem->riccati_R_mat, 0, 0);
+    blasfeo_dgecp(nu, nx, &custom_mem->riccati_S_const, 0, 0, &custom_mem->riccati_S_mat, 0, 0);
+
+    // Set constant values of dct_dux (nlbu_t + nlbx_t + nlg_t + nlh_t + nubu_t + nubx_t + nug_t + nuh_t, nu + nx)
+    // the gradients of u is on left of x
+    blasfeo_dgese({{zoro_description.nlbu_t}} + {{zoro_description.nlbx_t}} + {{zoro_description.nlg_t}} + {{zoro_description.nlh_t}}
+            + {{zoro_description.nubu_t}} + {{zoro_description.nubx_t}} + {{zoro_description.nug_t}} + {{zoro_description.nuh_t}}, nx + nu, 0.0,
+            &custom_mem->dct_dux, 0, 0);
+    blasfeo_dgese({{zoro_description.nlbx_e_t}} + {{zoro_description.nlg_e_t}} + {{zoro_description.nlh_e_t}}
+            + {{zoro_description.nubx_e_t}} + {{zoro_description.nug_e_t}} + {{zoro_description.nuh_e_t}}, nx, 0.0,
+            &custom_mem->dcet_dx, 0, 0);
+    int ir = 0;
+    // lbu
+    {%- for it in zoro_description.idx_lbu_t %}
+    blasfeo_dgein1(1.0, &custom_mem->dct_dux, ir, custom_mem->idxbu[{{it}}]);
+    ir += 1;
+    {%- endfor %}
+    // lbx
+    {%- for it in zoro_description.idx_lbx_t %}
+    blasfeo_dgein1(1.0, &custom_mem->dct_dux, ir, nu + custom_mem->idxbx[{{it}}]);
+    ir += 1;
+    {%- endfor %}
+    // lg
+    {%- for it in zoro_description.idx_lg_t %}
+    blasfeo_dgecp(1, nu, &custom_mem->Dg_mat, it, 0, &custom_mem->dct_dux, ir, 0);
+    blasfeo_dgecp(1, nx, &custom_mem->Cg_mat, it, 0, &custom_mem->dct_dux, ir, nu);
+    ir += 1;
+    {%- endfor %}
+    // lh
+    ir += {{zoro_description.nlh_t}};
+    // ubu
+    {%- for it in zoro_description.idx_ubu_t %}
+    blasfeo_dgein1(1.0, &custom_mem->dct_dux, ir, custom_mem->idxbu[{{it}}]);
+    ir += 1;
+    {%- endfor %}
+    // ubx
+    {%- for it in zoro_description.idx_ubx_t %}
+    blasfeo_dgein1(1.0, &custom_mem->dct_dux, ir, nu + custom_mem->idxbx[{{it}}]);
+    ir += 1;
+    {%- endfor %}
+    // ug
+    {%- for it in zoro_description.idx_ug_t %}
+    blasfeo_dgecp(1, nu, &custom_mem->Dg_mat, it, 0, &custom_mem->dct_dux, ir, 0);
+    blasfeo_dgecp(1, nx, &custom_mem->Cg_mat, it, 0, &custom_mem->dct_dux, ir, nu);
+    ir += 1;
+    {%- endfor %}
+
+    ir = 0;
+    // lbx_e
+    {%- for it in zoro_description.idx_lbx_e_t %}
+    blasfeo_dgein1(1.0, &custom_mem->dcet_dx, ir, custom_mem->idxbx[{{it}}]);
+    ir += 1;
+    {%- endfor %}
+    // lg_e
+    {%- for it in zoro_description.idx_lg_e_t %}
+    blasfeo_dgecp(1, nx, &custom_mem->Cg_e_mat, it, 0, &custom_mem->dcet_dx, ir, 0);
+    ir += 1;
+    {%- endfor %}
+    // lh_e (just add offset)
+    ir += {{zoro_description.nlh_e_t}};
+    // ubx_e
+    {%- for it in zoro_description.idx_ubx_e_t %}
+    blasfeo_dgein1(1.0, &custom_mem->dcet_dx, ir, custom_mem->idxbx[{{it}}]);
+    ir += 1;
+    {%- endfor %}
+    // ug_e
+    {%- for it in zoro_description.idx_ug_e_t %}
+    blasfeo_dgecp(1, nx, &custom_mem->Cg_e_mat, it, 0, &custom_mem->dcet_dx, ir, 0);
+    ir += 1;
+    {%- endfor %}
+
+    // fill with some values, but just for very first iteration, when back-offs are not available yet.
+    for (int ii = 0; ii < N; ii++)
+    {
+        blasfeo_dvecse(nbu + nbx + ng + nh, 1e-4, &custom_mem->ineq_backoff_sq_buffer[ii], 0);
+    }
+    blasfeo_dvecse(nbx_e + ng_e + nh_e, 1e-4, &custom_mem->ineq_backoff_sq_buffer[N], 0);
+    {%- endif %}
 }
 
 
@@ -492,9 +772,9 @@ static void compute_gh_beta(struct blasfeo_dmat* K_mat, struct blasfeo_dmat* C_m
                          struct blasfeo_dmat* P_mat,
                          int n_cstr, int nx, int nu)
 {
-    // (C+DK)@P@(C^T+K^TD^T)
-    // CaDK_mat = C_mat + D_mat @ K_mat
-    blasfeo_dgemm_nn(n_cstr, nx, nu, 1.0, D_mat, 0, 0,
+    // (C-DK)@P@(C^T-K^TD^T)
+    // CaDK_mat = C_mat - D_mat @ K_mat
+    blasfeo_dgemm_nn(n_cstr, nx, nu, -1.0, D_mat, 0, 0,
                         K_mat, 0, 0, 1.0,
                         C_mat, 0, 0, CaDK_mat, 0, 0);
     // CaDKmP_mat = CaDK_mat @ P_mat
@@ -634,6 +914,397 @@ static void compute_GWG_stagewise_varying(ocp_nlp_solver* solver, custom_memory*
 }
 {% endif %}
 
+{%- if (solver_options.sens_forw_p) and (zoro_description.input_Sigma_p_diag or zoro_description.input_Sigma_p) %}
+/**
+ * @brief Reset Sigma_p from the streaming payload (diag or full), leaving unchanged entries when using "skip negatives".
+ *
+ * Reads Sigma_p either as a diagonal vector (input_Sigma_p_diag) or a full column-major matrix (input_Sigma_p),
+ * and writes it into the BLASFEO Sigma_p matrix used for the S_p Sigma_p S_p^T contribution.
+ */
+static void reset_Sigma_p_matrix(struct blasfeo_dmat* Sigma_p_mat, double *data)
+{
+    const int np = {{ dims.np }};
+{%- if zoro_description.input_Sigma_p_diag %}
+    for (int i = 0; i < np; ++i)
+    {
+        if (data[i] < 0)
+        {
+            printf("skipping Sigma_p_diag[%d] = %f\n", i, data[i]);
+            continue;
+        }
+        blasfeo_dgein1(data[i], Sigma_p_mat, i, i);
+    }
+{%- elif zoro_description.input_Sigma_p %}
+    blasfeo_pack_dmat(np, np, data, np, Sigma_p_mat, 0, 0);
+{%- endif %}
+}
+
+/**
+ * @brief Build the additive term for covariance propagation: temp_GSp_mat = GWG + S_p Sigma_p S_p^T.
+ *
+ * Copies the base GWG term into temp_GSp_mat and, if enabled, accumulates the parametric uncertainty contribution.
+ * The output temp_GSp_mat is then later passed as the additive term in P_{k+1} = (A-BK) P_k (A-BK)^T + Q.
+ */
+static void build_additive_term(struct blasfeo_dmat* temp_GSp_mat,              // (nx x nx) output
+                                struct blasfeo_dmat* GWG_mat,            // (nx x nx) base
+                                struct blasfeo_dmat* S_p_mat,            // (nx x np)
+                                struct blasfeo_dmat* Sigma_p_mat,        // (np x np)
+                                struct blasfeo_dmat* temp_SpSig_mat,     // (nx x np) scratch
+                                int nx, int np)
+{
+    // temp_SpSig = S_p * Sigma_p
+    blasfeo_dgemm_nn(nx, np, np, 1.0, S_p_mat, 0, 0,
+                     Sigma_p_mat, 0, 0, 0.0,
+                     temp_SpSig_mat, 0, 0, temp_SpSig_mat, 0, 0);
+    // temp_GSp_mat = temp_SpSig * S_p^T + GWG
+    blasfeo_dgemm_nt(nx, nx, np, 1.0, temp_SpSig_mat, 0, 0,
+                     S_p_mat, 0, 0, 1.0,
+                     GWG_mat, 0, 0, temp_GSp_mat, 0, 0);
+}
+{%- endif %}
+
+{%- if (solver_options.sens_forw_p) and (zoro_description.nonlinear_uncertainty_mode == "CONSTANT") %}
+
+static void update_Pi_matrix(struct blasfeo_dmat* Pi_next_mat,
+                             struct blasfeo_dmat* AK_mat,
+                             struct blasfeo_dmat* Pi_mat,
+                             struct blasfeo_dmat* S_p_mat,
+                             int nx, int np)
+{
+    blasfeo_dgemm_nn(nx, np, nx, 1.0, AK_mat, 0, 0,
+                     Pi_mat, 0, 0, 0.0,
+                     Pi_next_mat, 0, 0, Pi_next_mat, 0, 0);
+    blasfeo_dgead(nx, np, 1.0, S_p_mat, 0, 0, Pi_next_mat, 0, 0);
+}
+
+static void build_param_cov_term_Pi(struct blasfeo_dmat* Pp_mat,
+                                    struct blasfeo_dmat* Pi_mat,
+                                    struct blasfeo_dmat* Sigma_p_mat,
+                                    struct blasfeo_dmat* temp_PiSig_mat,
+                                    int nx, int np)
+{
+    blasfeo_dgemm_nn(nx, np, np, 1.0, Pi_mat, 0, 0,
+                     Sigma_p_mat, 0, 0, 0.0,
+                     temp_PiSig_mat, 0, 0, temp_PiSig_mat, 0, 0);
+
+    blasfeo_dgemm_nt(nx, nx, np, 1.0, temp_PiSig_mat, 0, 0,
+                     Pi_mat, 0, 0, 0.0,
+                     Pp_mat, 0, 0, Pp_mat, 0, 0);
+}
+{%- endif %}
+
+static void update_riccati_quad_matrices(ocp_nlp_solver *solver, ocp_nlp_memory *nlp_mem, custom_memory* custom_mem, int ii)
+{
+    // extract dim
+    ocp_nlp_dims* nlp_dims = solver->dims;
+    int N = nlp_dims->N;
+    int nbu = {{ dims.nbu}};
+    int nbx = {{ dims.nbx}};
+    int ng = {{ dims.ng }};
+    int nh = {{ dims.nh }};
+    int nx = {{ dims.nx }};
+    int nu = {{ dims.nu }};
+
+    blasfeo_dgecp(NCT, nu+nx, &custom_mem->dct_dux, 0, 0, &custom_mem->scaled_dct_dux, 0, 0);
+
+    double temp_nominal_val;
+    int ir = 0;
+    // NOTE: this could be enhanced by using blasfeo_dgecpsc instead of blasfeo_dgesc.
+// lbu
+{%- if zoro_description.nlbu_t > 0 %}
+    d_ocp_qp_get_lbu(ii, nlp_mem->qp_in, custom_mem->d_ineq_val);
+{%- for it in zoro_description.idx_lbu_t %}
+    temp_nominal_val = custom_mem->d_ineq_val[{{it}}] - sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+ii, {{it}}));
+{%- if zoro_description.feedback_optimization_mode == "RICCATI_BARRIER_1" %}
+    blasfeo_dgesc(1, nu+nx, custom_mem->tau / (temp_nominal_val * temp_nominal_val), &custom_mem->scaled_dct_dux, ir, 0);
+{%- else %}
+    blasfeo_dgesc(1, nu+nx, -1.0 * custom_mem->tau / temp_nominal_val / (2 * sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+ii, {{it}}))), &custom_mem->scaled_dct_dux, ir, 0);
+{%- endif %}
+    ir += 1;
+{%- endfor %}
+{%- endif %}
+// lbx
+{%- if zoro_description.nlbx_t > 0 %}
+    d_ocp_qp_get_lbx(ii, nlp_mem->qp_in, custom_mem->d_ineq_val);
+{%- for it in zoro_description.idx_lbx_t %}
+    temp_nominal_val = custom_mem->d_ineq_val[{{it}}] - sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+ii, nbu + {{it}}));
+{%- if zoro_description.feedback_optimization_mode == "RICCATI_BARRIER_1" %}
+    blasfeo_dgesc(1, nu+nx, custom_mem->tau / (temp_nominal_val * temp_nominal_val), &custom_mem->scaled_dct_dux, ir, 0);
+{%- else %}
+    blasfeo_dgesc(1, nu+nx, -1.0 * custom_mem->tau / temp_nominal_val / (2 * sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+ii, nbu + {{it}}))), &custom_mem->scaled_dct_dux, ir, 0);
+{%- endif %}
+    ir += 1;
+{%- endfor %}
+{%- endif %}
+
+{%- if zoro_description.nlh_t + zoro_description.nuh_t > 0 %}
+    // Get C_k and D_k
+    ocp_nlp_get_at_stage(solver, ii, "D", custom_mem->d_Dgh_mat);
+    ocp_nlp_get_at_stage(solver, ii, "C", custom_mem->d_Cgh_mat);
+{%- endif %}
+
+{%- if zoro_description.nlg_t + zoro_description.nlh_t > 0 %}
+    // lg
+    d_ocp_qp_get_lg(ii, nlp_mem->qp_in, custom_mem->d_ineq_val);
+{%- for it in zoro_description.idx_lg_t %}
+    temp_nominal_val = custom_mem->d_ineq_val[{{it}}] - sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+ii, nbu + nbx + {{it}}));
+{%- if zoro_description.feedback_optimization_mode == "RICCATI_BARRIER_1" %}
+    blasfeo_dgesc(1, nu+nx, custom_mem->tau / (temp_nominal_val * temp_nominal_val), &custom_mem->scaled_dct_dux, ir, 0);
+{%- else %}
+    blasfeo_dgesc(1, nu+nx, -1.0 * custom_mem->tau / temp_nominal_val / (2 * sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+ii, nbu + nbx + {{it}}))),  &custom_mem->scaled_dct_dux, ir, 0);
+{%- endif %}
+    ir += 1;
+{%- endfor %}
+    // lh
+{%- for it in zoro_description.idx_lh_t %}
+    // NOTE: the d_Cgh_mat is column-major, the first ng rows are the Jacobians of the linear constraints
+    blasfeo_pack_dmat(1, nu, custom_mem->d_Dgh_mat + ng + {{it}}, ng+nh, &custom_mem->dct_dux, 0, 0);
+    blasfeo_pack_dmat(1, nu, custom_mem->d_Dgh_mat + ng + {{it}}, ng+nh, &custom_mem->scaled_dct_dux, 0, 0);
+    blasfeo_pack_dmat(1, nx, custom_mem->d_Cgh_mat + ng + {{it}}, ng+nh, &custom_mem->dct_dux, ir, nu);
+    blasfeo_pack_dmat(1, nx, custom_mem->d_Cgh_mat + ng + {{it}}, ng+nh, &custom_mem->scaled_dct_dux, ir, nu);
+    temp_nominal_val = custom_mem->d_ineq_val[ng + {{it}}] - sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+ii, nbu + nbx + ng + {{it}}));
+{%- if zoro_description.feedback_optimization_mode == "RICCATI_BARRIER_1" %}
+    blasfeo_dgesc(1, nu+nx, custom_mem->tau / (temp_nominal_val * temp_nominal_val), &custom_mem->scaled_dct_dux, ir, 0);
+{%- else %}
+    blasfeo_dgesc(1, nu+nx, -1.0 * custom_mem->tau / temp_nominal_val / (2 * sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+ii, nbu + nbx + ng + {{it}}))), &custom_mem->scaled_dct_dux, ir, 0);
+{%- endif %}
+    ir += 1;
+{%- endfor %}
+{%- endif %}
+
+// ubu
+{%- if zoro_description.nubu_t > 0 %}
+    d_ocp_qp_get_ubu(ii, nlp_mem->qp_in, custom_mem->d_ineq_val);
+{%- for it in zoro_description.idx_ubu_t %}
+    temp_nominal_val = -custom_mem->d_ineq_val[{{it}}] - sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+ii, {{it}}));
+{%- if zoro_description.feedback_optimization_mode == "RICCATI_BARRIER_1" %}
+    blasfeo_dgesc(1, nu+nx, custom_mem->tau / (temp_nominal_val * temp_nominal_val), &custom_mem->scaled_dct_dux, ir, 0);
+{%- else %}
+    blasfeo_dgesc(1, nu+nx, -1.0 * custom_mem->tau / temp_nominal_val / (2 * sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+ii, {{it}}))), &custom_mem->scaled_dct_dux, ir, 0);
+{%- endif %}
+    ir += 1;
+{%- endfor %}
+{%- endif %}
+// ubx
+{%- if zoro_description.nubx_t > 0 %}
+    d_ocp_qp_get_ubx(ii, nlp_mem->qp_in, custom_mem->d_ineq_val);
+{%- for it in zoro_description.idx_ubx_t %}
+    temp_nominal_val = -custom_mem->d_ineq_val[{{it}}] - sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+ii, nbu + {{it}}));
+{%- if zoro_description.feedback_optimization_mode == "RICCATI_BARRIER_1" %}
+    blasfeo_dgesc(1, nu+nx, custom_mem->tau / (temp_nominal_val * temp_nominal_val), &custom_mem->scaled_dct_dux, ir, 0);
+{%- else %}
+    blasfeo_dgesc(1, nu+nx, -1.0 * custom_mem->tau / temp_nominal_val / (2 * sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+ii, nbu + {{it}}))), &custom_mem->scaled_dct_dux, ir, 0);
+{%- endif %}
+    ir += 1;
+{%- endfor %}
+{%- endif %}
+// ug
+{%- if zoro_description.nug_t + zoro_description.nuh_t > 0 %}
+    d_ocp_qp_get_ug(ii, nlp_mem->qp_in, custom_mem->d_ineq_val);
+{%- for it in zoro_description.idx_ug_t %}
+    temp_nominal_val = - custom_mem->d_ineq_val[{{it}}] - sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+ii, nbu + nbx + {{it}})) ;
+{%- if zoro_description.feedback_optimization_mode == "RICCATI_BARRIER_1" %}
+    blasfeo_dgesc(1, nu+nx, custom_mem->tau / (temp_nominal_val * temp_nominal_val), &custom_mem->scaled_dct_dux, ir, 0);
+{%- else %}
+    blasfeo_dgesc(1, nu+nx, -1.0 * custom_mem->tau / temp_nominal_val / (2 * sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+ii, nbu + nbx + {{it}}))), &custom_mem->scaled_dct_dux, ir, 0);
+{%- endif %}
+    ir += 1;
+{%- endfor %}
+// uh
+{%- for it in zoro_description.idx_uh_t %}
+    // NOTE: the d_Cgh_mat is column-major, the first ng rows are the Jacobians of the linear constraints
+    blasfeo_pack_dmat(1, nu, custom_mem->d_Dgh_mat + ng + {{it}}, ng+nh, &custom_mem->dct_dux, 0, 0);
+    blasfeo_pack_dmat(1, nu, custom_mem->d_Dgh_mat + ng + {{it}}, ng+nh, &custom_mem->scaled_dct_dux, 0, 0);
+    blasfeo_pack_dmat(1, nx, custom_mem->d_Cgh_mat + ng + {{it}}, ng+nh, &custom_mem->dct_dux, ir, nu);
+    blasfeo_pack_dmat(1, nx, custom_mem->d_Cgh_mat + ng + {{it}}, ng+nh, &custom_mem->scaled_dct_dux, ir, nu);
+    temp_nominal_val = -custom_mem->d_ineq_val[ng + {{it}}] - sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+ii, nbu + nbx + ng + {{it}}));
+{%- if zoro_description.feedback_optimization_mode == "RICCATI_BARRIER_1" %}
+    blasfeo_dgesc(1, nu+nx, custom_mem->tau / (temp_nominal_val * temp_nominal_val), &custom_mem->scaled_dct_dux, ir, 0);
+{%- else %}
+    blasfeo_dgesc(1, nu+nx, -1.0 * custom_mem->tau / temp_nominal_val / (2 * sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+ii, nbu + nbx + ng + {{it}}))), &custom_mem->scaled_dct_dux, ir, 0);
+{%- endif %}
+    ir += 1;
+{%- endfor %}
+{%- endif %}
+
+    blasfeo_dgemm_tn(nx, nx, NCT, 1.0, &custom_mem->dct_dux, 0, nu,
+        &custom_mem->scaled_dct_dux, 0, nu, 1.0, &custom_mem->riccati_Q_const, 0, 0, &custom_mem->riccati_Q_mat, 0, 0);
+    blasfeo_dgemm_tn(nu, nu, NCT, 1.0, &custom_mem->dct_dux, 0, 0,
+        &custom_mem->scaled_dct_dux, 0, 0, 1.0, &custom_mem->riccati_R_const, 0, 0, &custom_mem->riccati_R_mat, 0, 0);
+    blasfeo_dgemm_tn(nu, nx, NCT, 1.0, &custom_mem->dct_dux, 0, 0,
+        &custom_mem->scaled_dct_dux, 0, nu, 1.0, &custom_mem->riccati_S_const, 0, 0, &custom_mem->riccati_S_mat, 0, 0);
+
+}
+
+
+static void update_riccati_quad_matrices_terminal(ocp_nlp_solver *solver, ocp_nlp_memory *nlp_mem, custom_memory* custom_mem)
+{
+    // extract dim
+    ocp_nlp_dims* nlp_dims = solver->dims;
+    int N = nlp_dims->N;
+    int nbx_e = {{ dims.nbx_e}};
+    int ng_e = {{ dims.ng_e }};
+    int nh_e = {{ dims.nh_e }};
+    int nx = {{ dims.nx }};
+    int nu = {{ dims.nu }};
+
+    blasfeo_dgecp(NCT_E, nx, &custom_mem->dcet_dx, 0, 0, &custom_mem->scaled_dcet_dx, 0, 0);
+
+    double temp_nominal_val;
+    int ir = 0;
+// lbx_e
+{%- if zoro_description.nlbx_e_t > 0 %}
+    d_ocp_qp_get_lbx(N, nlp_mem->qp_in, custom_mem->d_ineq_e_val);
+{%- for it in zoro_description.idx_lbx_e_t %}
+    temp_nominal_val = custom_mem->d_ineq_e_val[{{it}}] - sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+N, {{it}}));
+{%- if zoro_description.feedback_optimization_mode == "RICCATI_BARRIER_1" %}
+    blasfeo_dgesc(1, nx, custom_mem->tau / (temp_nominal_val * temp_nominal_val), &custom_mem->scaled_dcet_dx, ir, 0);
+{%- else %}
+    blasfeo_dgesc(1, nx, -1.0 * custom_mem->tau / temp_nominal_val / (2 * sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+N, {{it}}))), &custom_mem->scaled_dcet_dx, ir, 0);
+{%- endif %}
+    ir += 1;
+{%- endfor %}
+{%- endif %}
+
+{%- if zoro_description.nlh_e_t + zoro_description.nuh_e_t > 0 %}
+    // Get C_N
+    ocp_nlp_get_at_stage(solver, N, "C", custom_mem->d_Cgh_mat);
+{%- endif %}
+
+{%- if zoro_description.nlg_e_t + zoro_description.nlh_e_t > 0 %}
+    d_ocp_qp_get_lg(N, nlp_mem->qp_in, custom_mem->d_ineq_e_val);
+// lg_e
+{%- for it in zoro_description.idx_lg_e_t %}
+    temp_nominal_val = custom_mem->d_ineq_e_val[{{it}}] - sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+N, nbx_e + {{it}}));
+{%- if zoro_description.feedback_optimization_mode == "RICCATI_BARRIER_1" %}
+    blasfeo_dgesc(1, nx, custom_mem->tau / (temp_nominal_val * temp_nominal_val), &custom_mem->scaled_dcet_dx, ir, 0);
+{%- else %}
+    blasfeo_dgesc(1, nx, -1.0 * custom_mem->tau / temp_nominal_val / (2 * sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+N, nbx_e + {{it}}))), &custom_mem->scaled_dcet_dx, ir, 0);
+{%- endif %}
+    ir += 1;
+{%- endfor %}
+// lh_e
+{%- for it in zoro_description.idx_lh_e_t %}
+    // NOTE: the d_Cgh_mat is column-major, the first ng_e rows are the Jacobians of the linear constraints
+    blasfeo_pack_dmat(1, nx, custom_mem->d_Cgh_mat + ng_e + {{it}}, ng_e+nh_e, &custom_mem->dcet_dx, ir, 0);
+    blasfeo_pack_dmat(1, nx, custom_mem->d_Cgh_mat + ng_e + {{it}}, ng_e+nh_e, &custom_mem->scaled_dcet_dx, ir, 0);
+    temp_nominal_val = custom_mem->d_ineq_e_val[ng_e + {{it}}] - sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+N, nbx_e + ng_e + {{it}}));
+{%- if zoro_description.feedback_optimization_mode == "RICCATI_BARRIER_1" %}
+    blasfeo_dgesc(1, nx, custom_mem->tau / (temp_nominal_val * temp_nominal_val), &custom_mem->scaled_dcet_dx, ir, 0);
+{%- else %}
+    blasfeo_dgesc(1, nx, -1.0 * custom_mem->tau / temp_nominal_val / (2 * sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+N, nbx_e + ng_e + {{it}}))), &custom_mem->scaled_dcet_dx, ir, 0);
+{%- endif %}
+    ir += 1;
+{%- endfor %}
+{%- endif %}
+
+// ubx_e
+{%- if zoro_description.nubx_e_t > 0 %}
+    d_ocp_qp_get_ubx(N, nlp_mem->qp_in, custom_mem->d_ineq_e_val);
+{%- for it in zoro_description.idx_ubx_e_t %}
+    temp_nominal_val = -custom_mem->d_ineq_e_val[{{it}}] - sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+N, {{it}}));
+{%- if zoro_description.feedback_optimization_mode == "RICCATI_BARRIER_1" %}
+    blasfeo_dgesc(1, nx, custom_mem->tau / (temp_nominal_val * temp_nominal_val), &custom_mem->scaled_dcet_dx, ir, 0);
+{%- else %}
+    blasfeo_dgesc(1, nx, -1.0 * custom_mem->tau / temp_nominal_val / (2 * sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+N, {{it}}))), &custom_mem->scaled_dcet_dx, ir, 0);
+{%- endif %}
+    ir += 1;
+{%- endfor %}
+{%- endif %}
+
+{%- if zoro_description.nug_e_t + zoro_description.nuh_e_t > 0 %}
+    d_ocp_qp_get_ug(N, nlp_mem->qp_in, custom_mem->d_ineq_e_val);
+// ug_e
+{%- for it in zoro_description.idx_ug_e_t %}
+    temp_nominal_val = -custom_mem->d_ineq_e_val[{{it}}] - sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+N, nbx_e + {{it}}));
+{%- if zoro_description.feedback_optimization_mode == "RICCATI_BARRIER_1" %}
+    blasfeo_dgesc(1, nx, custom_mem->tau / (temp_nominal_val * temp_nominal_val), &custom_mem->scaled_dcet_dx, ir, 0);
+{%- else %}
+    blasfeo_dgesc(1, nx, -1.0 * custom_mem->tau / temp_nominal_val / (2 * sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+N, nbx_e + {{it}}))), &custom_mem->scaled_dcet_dx, ir, 0);
+{%- endif %}
+    ir += 1;
+{%- endfor %}
+// uh_e
+{%- for it in zoro_description.idx_uh_e_t %}
+    // NOTE: the d_Cgh_mat is column-major, the first ng_e rows are the Jacobians of the linear constraints
+    blasfeo_pack_dmat(1, nx, custom_mem->d_Cgh_mat + ng_e + {{it}}, ng_e+nh_e, &custom_mem->dcet_dx, ir, 0);
+    blasfeo_pack_dmat(1, nx, custom_mem->d_Cgh_mat + ng_e + {{it}}, ng_e+nh_e, &custom_mem->scaled_dcet_dx, ir, 0);
+    temp_nominal_val = - custom_mem->d_ineq_e_val[ng_e + {{it}}] - sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+N, nbx_e + ng_e + {{it}}));
+{%- if zoro_description.feedback_optimization_mode == "RICCATI_BARRIER_1" %}
+    blasfeo_dgesc(1, nx, custom_mem->tau / (temp_nominal_val * temp_nominal_val), &custom_mem->scaled_dcet_dx, ir, 0);
+{%- else %}
+    blasfeo_dgesc(1, nx, -1.0 * custom_mem->tau / temp_nominal_val / (2 * sqrt(blasfeo_dvecex1(custom_mem->ineq_backoff_sq_buffer+N, nbx_e + ng_e + {{it}}))), &custom_mem->scaled_dcet_dx, ir, 0);
+{%- endif %}
+    ir += 1;
+{%- endfor %}
+{%- endif %}
+
+    blasfeo_dgemm_tn(nx, nx, NCT_E, 1.0, &custom_mem->dcet_dx, 0, 0, &custom_mem->scaled_dcet_dx, 0, 0, 1.0, &custom_mem->riccati_Q_const_e, 0, 0, &custom_mem->riccati_Q_mat, 0, 0);
+
+}
+
+
+static void riccati_recursion(ocp_nlp_solver* solver, ocp_nlp_memory *nlp_mem, custom_memory* custom_mem)
+{
+    ocp_nlp_dims* nlp_dims = solver->dims;
+    int N = nlp_dims->N;
+    int nx = nlp_dims->nx[0];
+    int nu = nlp_dims->nu[0];
+
+{%- if zoro_description.feedback_optimization_mode is containing("BARRIER") %}
+    update_riccati_quad_matrices_terminal(solver, nlp_mem, custom_mem);
+    blasfeo_dgecp(nx, nx, &custom_mem->riccati_Q_mat, 0, 0, &custom_mem->temp_riccati_P_plus_mat, 0, 0);
+{%- else %}
+    blasfeo_dgecp(nx, nx, &custom_mem->riccati_Q_const_e, 0, 0, &custom_mem->temp_riccati_P_plus_mat, 0, 0);
+{%- endif %}
+
+    for (int ii = N-1; ii >= 1; ii--)
+    {
+        // NOTE: It would be most efficient to get pointers to A, B matrices in blasfeo form directly to avoid unpacking AND packing.
+        ocp_nlp_get_at_stage(solver, ii, "A", custom_mem->d_A_mat);
+        blasfeo_pack_dmat(nx, nx, custom_mem->d_A_mat, nx, &custom_mem->A_mat, 0, 0);
+        ocp_nlp_get_at_stage(solver, ii, "B", custom_mem->d_B_mat);
+        blasfeo_pack_dmat(nx, nu, custom_mem->d_B_mat, nx, &custom_mem->B_mat, 0, 0);
+
+    {%- if zoro_description.feedback_optimization_mode is containing("BARRIER") %}
+        update_riccati_quad_matrices(solver, nlp_mem, custom_mem, ii);
+    {%- endif %}
+
+        // temp_riccati_BP_mat = B^T @ P
+        blasfeo_dgemm_tn(nu, nx, nx, 1.0, &custom_mem->B_mat, 0, 0, &custom_mem->temp_riccati_P_plus_mat, 0, 0,
+                            0.0, &custom_mem->temp_riccati_BP_mat, 0, 0, &custom_mem->temp_riccati_BP_mat, 0, 0);
+        // temp_riccati_RaBPB_mat = R + temp_riccati_BP_mat @ B
+        blasfeo_dgemm_nn(nu, nu, nx, 1.0, &custom_mem->temp_riccati_BP_mat, 0, 0, &custom_mem->B_mat, 0, 0,
+                            1.0, &custom_mem->riccati_R_mat, 0, 0, &custom_mem->temp_riccati_RaBPB_mat, 0, 0);
+        // temp_riccati_SaBPA_mat = S + temp_riccati_BP_mat @ A
+        blasfeo_dgemm_nn(nu, nx, nx, 1.0, &custom_mem->temp_riccati_BP_mat, 0, 0, &custom_mem->A_mat, 0, 0,
+                            1.0, &custom_mem->riccati_S_mat, 0, 0, &custom_mem->temp_riccati_SaBPA_mat, 0, 0);
+
+        // temp_riccati_chol_mat = chol( temp_riccati_RaBPB_mat )
+        blasfeo_dpotrf_l(nu, &custom_mem->temp_riccati_RaBPB_mat, 0, 0, &custom_mem->temp_riccati_chol_mat, 0, 0);
+        // temp_riccati_cholinvSaBPA_mat = inv( temp_riccati_chol_mat ) @ temp_riccati_SaBPA_mat
+        blasfeo_dtrsm_llnn(nu, nx, 1.0, &custom_mem->temp_riccati_chol_mat, 0, 0,
+                            &custom_mem->temp_riccati_SaBPA_mat, 0, 0, &custom_mem->temp_riccati_cholinvSaBPA_mat, 0, 0);
+        // custom_mem->riccati_K_buffer[ii] = inv( temp_riccati_chol_mat ).T @ temp_riccati_cholinvSaBPA_mat
+        blasfeo_dtrsm_lltn(nu, nx, 1.0, &custom_mem->temp_riccati_chol_mat, 0, 0,
+                            &custom_mem->temp_riccati_cholinvSaBPA_mat, 0, 0, &custom_mem->riccati_K_buffer[ii], 0, 0);
+
+        // temp_riccati_P_mat = Q - temp_riccati_cholinvSaBPA_mat^T @ temp_riccati_cholinvSaBPA_mat
+        blasfeo_dgemm_tn(nx, nx, nu, -1.0, &custom_mem->temp_riccati_cholinvSaBPA_mat, 0, 0, &custom_mem->temp_riccati_cholinvSaBPA_mat, 0, 0,
+            1.0, &custom_mem->riccati_Q_mat, 0, 0, &custom_mem->temp_riccati_P_mat, 0, 0);
+        // temp_riccati_AP_mat = A^T @ P
+        blasfeo_dgemm_tn(nx, nx, nx, 1.0, &custom_mem->A_mat, 0, 0, &custom_mem->temp_riccati_P_plus_mat, 0, 0,
+                            0.0, &custom_mem->temp_riccati_AP_mat, 0, 0, &custom_mem->temp_riccati_AP_mat, 0, 0);
+        // temp_riccati_P_mat += temp_riccati_AP_mat @ A
+        blasfeo_dgemm_nn(nx, nx, nx, 1.0, &custom_mem->temp_riccati_AP_mat, 0, 0, &custom_mem->A_mat, 0, 0,
+                            1.0, &custom_mem->temp_riccati_P_mat, 0, 0, &custom_mem->temp_riccati_P_mat, 0, 0);
+        // temp_riccati_P_plus_mat = temp_riccati_P_mat
+        blasfeo_dgecp(nx, nx, &custom_mem->temp_riccati_P_mat, 0, 0, &custom_mem->temp_riccati_P_plus_mat, 0, 0);
+    }
+
+    // NOTE: K[0] is forced to be zero.
+    blasfeo_dgese(nu, nx, 0., &custom_mem->riccati_K_buffer[0], 0, 0);
+}
 
 
 static void uncertainty_propagate_and_update(ocp_nlp_solver *solver, ocp_nlp_in *nlp_in, ocp_nlp_out *nlp_out, custom_memory *custom_mem, double* data, int data_len)
@@ -644,6 +1315,7 @@ static void uncertainty_propagate_and_update(ocp_nlp_solver *solver, ocp_nlp_in 
     int N = nlp_dims->N;
     int nx = nlp_dims->nx[0];
     int nu = nlp_dims->nu[0];
+    int np = {{ dims.np }};
     int nx_sqr = nx*nx;
     int nbx = {{ dims.nbx }};
     int nbu = {{ dims.nbu }};
@@ -653,22 +1325,36 @@ static void uncertainty_propagate_and_update(ocp_nlp_solver *solver, ocp_nlp_in 
     int nh_e = {{ dims.nh_e }};
     int nbx_e = {{ dims.nbx_e }};
     double backoff_scaling_gamma = {{ zoro_description.backoff_scaling_gamma }};
+    double backoff_eps = 1e-8;
+    struct blasfeo_dmat *K_mat = &custom_mem->K_mat;
 
-    // First Stage
+{%- if zoro_description.feedback_optimization_mode != "CONSTANT_FEEDBACK" %}
+    K_mat = &custom_mem->riccati_K_buffer[0];
+{%- endif %}
+
+{%- if (solver_options.sens_forw_p) and (zoro_description.nonlinear_uncertainty_mode == "CONSTANT") %}
+    // Fixed parameter mode: Π_0 = 0, and P_w,0 = P_0 because Π_0 Σ Π_0^T = 0
+    blasfeo_dgese(nx, np, 0.0, &custom_mem->Pi_mat, 0, 0);
+    blasfeo_dgecp(nx, nx, &custom_mem->uncertainty_matrix_buffer[0], 0, 0, &custom_mem->P_w_mat, 0, 0);
+{%- endif %}
+
+    /* First Stage */
     // NOTE: lbx_0 and ubx_0 should not be tightened.
     // NOTE: lg_0 and ug_0 are not tightened.
     // NOTE: lh_0 and uh_0 are not tightened.
 {%- if zoro_description.nlbu_t + zoro_description.nubu_t > 0 %}
-    compute_KPK(&custom_mem->K_mat, &custom_mem->temp_KP_mat,
-                &custom_mem->temp_KPK_mat, &(custom_mem->uncertainty_matrix_buffer[0]), nx, nu);
+    compute_KPK(K_mat, &custom_mem->temp_KP_mat,
+                &custom_mem->temp_KPK_mat, &custom_mem->uncertainty_matrix_buffer[0], nx, nu);
+    blasfeo_ddiaex_sp(nbu, backoff_scaling_gamma*backoff_scaling_gamma, custom_mem->idxbu, &custom_mem->temp_KPK_mat, 0, 0, &custom_mem->ineq_backoff_sq_buffer[0], 0);
+{%- if zoro_description.feedback_optimization_mode is containing("BARRIER") %}
+    blasfeo_dvecad(nbu, backoff_eps, &custom_mem->ricc_ones, 0, &custom_mem->ineq_backoff_sq_buffer[0], 0);
+{%- endif %}
 
 {%- if zoro_description.nlbu_t > 0 %}
     // backoff lbu
     {%- for it in zoro_description.idx_lbu_t %}
     custom_mem->d_lbu_tightened[{{it}}]
-        = custom_mem->d_lbu[{{it}}]
-            + backoff_scaling_gamma * sqrt(blasfeo_dgeex1(&custom_mem->temp_KPK_mat,
-                custom_mem->idxbu[{{it}}],custom_mem->idxbu[{{it}}]));
+        = custom_mem->d_lbu[{{it}}] + sqrt(blasfeo_dvecex1(&custom_mem->ineq_backoff_sq_buffer[0], {{it}}));
     {%- endfor %}
     ocp_nlp_constraints_model_set(nlp_config, nlp_dims, nlp_in, nlp_out, 0, "lbu", custom_mem->d_lbu_tightened);
 {%- endif %}
@@ -676,18 +1362,22 @@ static void uncertainty_propagate_and_update(ocp_nlp_solver *solver, ocp_nlp_in 
     // backoff ubu
     {%- for it in zoro_description.idx_ubu_t %}
     custom_mem->d_ubu_tightened[{{it}}]
-        = custom_mem->d_ubu[{{it}}]
-            - backoff_scaling_gamma * sqrt(blasfeo_dgeex1(&custom_mem->temp_KPK_mat,
-                custom_mem->idxbu[{{it}}],custom_mem->idxbu[{{it}}]));
+        = custom_mem->d_ubu[{{it}}] - sqrt(blasfeo_dvecex1(&custom_mem->ineq_backoff_sq_buffer[0], {{it}}));
     {%- endfor %}
     ocp_nlp_constraints_model_set(nlp_config, nlp_dims, nlp_in, nlp_out, 0, "ubu", custom_mem->d_ubu_tightened);
 {%- endif %}
 {%- endif %}
-    // Middle Stages
+
+
+    /* Middle Stages */
     // constraint tightening: for next stage based on dynamics of ii stage
     // P[ii+1] = (A-B@K) @ P[ii] @ (A-B@K).T + G@W@G.T
     for (int ii = 0; ii < N-1; ii++)
     {
+{%- if zoro_description.feedback_optimization_mode != "CONSTANT_FEEDBACK" %}
+        K_mat = &custom_mem->riccati_K_buffer[ii];
+{%- endif %}
+
         // get and pack: A, B
         ocp_nlp_get_at_stage(solver, ii, "A", custom_mem->d_A_mat);
         blasfeo_pack_dmat(nx, nx, custom_mem->d_A_mat, nx, &custom_mem->A_mat, 0, 0);
@@ -698,30 +1388,101 @@ static void uncertainty_propagate_and_update(ocp_nlp_solver *solver, ocp_nlp_in 
         compute_GWG_stagewise_varying(solver, custom_mem, data, ii);
 {% endif %}
 
-        compute_next_P_matrix(&(custom_mem->uncertainty_matrix_buffer[ii]),
-                              &(custom_mem->uncertainty_matrix_buffer[ii+1]),
-                              &custom_mem->A_mat, &custom_mem->B_mat,
-                              &custom_mem->K_mat, &custom_mem->GWG_mat,
-                              &custom_mem->AK_mat, &custom_mem->temp_AP_mat, nx, nu);
+{%- if (solver_options.sens_forw_p) and zoro_description.nonlinear_uncertainty_mode != "NONE" %}
+
+{%- if zoro_description.nonlinear_uncertainty_mode == "NOISE" %}
+    // NOISE / stepwise nonlinear noise: P_{k+1} = (A-BK)P_k(A-BK)^T + GWG^T + S_p Σ_p S_p^T
+    ocp_nlp_get_at_stage(solver, ii, "S_p", custom_mem->d_S_p);
+    blasfeo_pack_dmat(nx, np, custom_mem->d_S_p, nx, &custom_mem->S_p_mat, 0, 0);
+
+    build_additive_term(&custom_mem->temp_GSp_mat,
+                        &custom_mem->GWG_mat,
+                        &custom_mem->S_p_mat,
+                        &custom_mem->Sigma_p_mat,
+                        &custom_mem->temp_SpSig_mat,
+                        nx, np);
+
+    compute_next_P_matrix(&custom_mem->uncertainty_matrix_buffer[ii],
+                          &custom_mem->uncertainty_matrix_buffer[ii+1],
+                          &custom_mem->A_mat, &custom_mem->B_mat,
+                          K_mat, &custom_mem->temp_GSp_mat,
+                          &custom_mem->AK_mat, &custom_mem->temp_AP_mat, nx, nu);
+
+{%- elif zoro_description.nonlinear_uncertainty_mode == "CONSTANT" %}
+    // Fixed parameter error over horizon:
+    //   P_w,k+1 = (A-BK)P_w,k(A-BK)^T + GWG^T
+    //   Π_{k+1} = (A-BK)Π_k + S_{p,k}
+    //   P_{k+1} = P_w,k+1 + Π_{k+1} Σ_p Π_{k+1}^T
+    ocp_nlp_get_at_stage(solver, ii, "S_p", custom_mem->d_S_p);
+    blasfeo_pack_dmat(nx, np, custom_mem->d_S_p, nx, &custom_mem->S_p_mat, 0, 0);
+
+    compute_next_P_matrix(&custom_mem->P_w_mat,
+                          &custom_mem->uncertainty_matrix_buffer[ii+1],
+                          &custom_mem->A_mat, &custom_mem->B_mat,
+                          K_mat, &custom_mem->GWG_mat,
+                          &custom_mem->AK_mat, &custom_mem->temp_AP_mat, nx, nu);
+
+    // cache P_w,k+1 for the next iteration before adding param term
+    blasfeo_dgecp(nx, nx, &custom_mem->uncertainty_matrix_buffer[ii+1], 0, 0, &custom_mem->P_w_mat, 0, 0);
+
+    update_Pi_matrix(&custom_mem->temp_Pi_mat,
+                     &custom_mem->AK_mat,
+                     &custom_mem->Pi_mat,
+                     &custom_mem->S_p_mat,
+                     nx, np);
+
+    build_param_cov_term_Pi(&custom_mem->temp_GSp_mat,
+                            &custom_mem->temp_Pi_mat,
+                            &custom_mem->Sigma_p_mat,
+                            &custom_mem->temp_SpSig_mat,
+                            nx, np);
+
+    blasfeo_dgead(nx, nx, 1.0, &custom_mem->temp_GSp_mat, 0, 0,
+                  &custom_mem->uncertainty_matrix_buffer[ii+1], 0, 0);
+
+    // Π <- Π_{k+1}
+    blasfeo_dgecp(nx, np, &custom_mem->temp_Pi_mat, 0, 0, &custom_mem->Pi_mat, 0, 0);
+
+{%- else %}
+    // NONE: ignore Σ_p / S_p entirely
+    compute_next_P_matrix(&custom_mem->uncertainty_matrix_buffer[ii],
+                          &custom_mem->uncertainty_matrix_buffer[ii+1],
+                          &custom_mem->A_mat, &custom_mem->B_mat,
+                          K_mat, &custom_mem->GWG_mat,
+                          &custom_mem->AK_mat, &custom_mem->temp_AP_mat, nx, nu);
+{%- endif %}
+
+{%- else %}
+    compute_next_P_matrix(&custom_mem->uncertainty_matrix_buffer[ii],
+                          &custom_mem->uncertainty_matrix_buffer[ii+1],
+                          &custom_mem->A_mat, &custom_mem->B_mat,
+                          K_mat, &custom_mem->GWG_mat,
+                          &custom_mem->AK_mat, &custom_mem->temp_AP_mat, nx, nu);
+{%- endif %}
+
+{%- if zoro_description.feedback_optimization_mode != "CONSTANT_FEEDBACK" %}
+        K_mat = &custom_mem->riccati_K_buffer[ii+1];
+{%- endif %}
 
         // state constraints
-{%- if zoro_description.nlbx_t + zoro_description.nubx_t> 0 %}
+{%- if zoro_description.nlbx_t + zoro_description.nubx_t > 0 %}
+    blasfeo_ddiaex_sp(nbx, backoff_scaling_gamma*backoff_scaling_gamma, custom_mem->idxbx, &custom_mem->uncertainty_matrix_buffer[ii+1], 0, 0, &custom_mem->ineq_backoff_sq_buffer[ii+1], nbu);
+{%- if zoro_description.feedback_optimization_mode is containing("BARRIER") %}
+    blasfeo_dvecad(nbx, backoff_eps, &custom_mem->ricc_ones, 0, &custom_mem->ineq_backoff_sq_buffer[ii+1], nbu);
+{%- endif %}
     {%- if zoro_description.nlbx_t > 0 %}
         // lbx
         {%- for it in zoro_description.idx_lbx_t %}
         custom_mem->d_lbx_tightened[{{it}}]
-            = custom_mem->d_lbx[{{it}}]
-                + backoff_scaling_gamma * sqrt(blasfeo_dgeex1(&custom_mem->uncertainty_matrix_buffer[ii+1],
-                    custom_mem->idxbx[{{it}}],custom_mem->idxbx[{{it}}]));
+            = custom_mem->d_lbx[{{it}}] + sqrt(blasfeo_dvecex1(&custom_mem->ineq_backoff_sq_buffer[ii+1], nbu + {{it}}));
         {%- endfor %}
         ocp_nlp_constraints_model_set(nlp_config, nlp_dims, nlp_in, nlp_out, ii+1, "lbx", custom_mem->d_lbx_tightened);
     {%- endif %}
     {% if zoro_description.nubx_t > 0 %}
         // ubx
         {%- for it in zoro_description.idx_ubx_t %}
-        custom_mem->d_ubx_tightened[{{it}}] = custom_mem->d_ubx[{{it}}]
-                - backoff_scaling_gamma * sqrt(blasfeo_dgeex1(&custom_mem->uncertainty_matrix_buffer[ii+1],
-                    custom_mem->idxbx[{{it}}],custom_mem->idxbx[{{it}}]));
+        custom_mem->d_ubx_tightened[{{it}}]
+            = custom_mem->d_ubx[{{it}}] - sqrt(blasfeo_dvecex1(&custom_mem->ineq_backoff_sq_buffer[ii+1], nbu + {{it}}));
         {%- endfor %}
         ocp_nlp_constraints_model_set(nlp_config, nlp_dims, nlp_in, nlp_out, ii+1, "ubx", custom_mem->d_ubx_tightened);
     {%- endif %}
@@ -729,23 +1490,22 @@ static void uncertainty_propagate_and_update(ocp_nlp_solver *solver, ocp_nlp_in 
 
 {%- if zoro_description.nlbu_t + zoro_description.nubu_t > 0 %}
         // input constraints
-        compute_KPK(&custom_mem->K_mat, &custom_mem->temp_KP_mat,
-            &custom_mem->temp_KPK_mat, &(custom_mem->uncertainty_matrix_buffer[ii+1]), nx, nu);
-
+        compute_KPK(K_mat, &custom_mem->temp_KP_mat,
+            &custom_mem->temp_KPK_mat, &custom_mem->uncertainty_matrix_buffer[ii+1], nx, nu);
+        blasfeo_ddiaex_sp(nbu, backoff_scaling_gamma*backoff_scaling_gamma, custom_mem->idxbu, &custom_mem->temp_KPK_mat, 0, 0, &custom_mem->ineq_backoff_sq_buffer[ii+1], 0);
+{%- if zoro_description.feedback_optimization_mode is containing("BARRIER") %}
+        blasfeo_dvecad(nbu, backoff_eps, &custom_mem->ricc_ones, 0, &custom_mem->ineq_backoff_sq_buffer[ii+1], 0);
+{%- endif %}
     {%- if zoro_description.nlbu_t > 0 %}
         {%- for it in zoro_description.idx_lbu_t %}
-        custom_mem->d_lbu_tightened[{{it}}] = custom_mem->d_lbu[{{it}}]
-                + backoff_scaling_gamma * sqrt(blasfeo_dgeex1(&custom_mem->temp_KPK_mat,
-                    custom_mem->idxbu[{{it}}], custom_mem->idxbu[{{it}}]));
+        custom_mem->d_lbu_tightened[{{it}}] = custom_mem->d_lbu[{{it}}] + sqrt(blasfeo_dvecex1(&custom_mem->ineq_backoff_sq_buffer[ii+1], {{it}}));
         {%- endfor %}
 
         ocp_nlp_constraints_model_set(nlp_config, nlp_dims, nlp_in, nlp_out, ii+1, "lbu", custom_mem->d_lbu_tightened);
     {%- endif %}
     {%- if zoro_description.nubu_t > 0 %}
         {%- for it in zoro_description.idx_ubu_t %}
-        custom_mem->d_ubu_tightened[{{it}}] = custom_mem->d_ubu[{{it}}]
-                - backoff_scaling_gamma * sqrt(blasfeo_dgeex1(&custom_mem->temp_KPK_mat,
-                    custom_mem->idxbu[{{it}}], custom_mem->idxbu[{{it}}]));
+        custom_mem->d_ubu_tightened[{{it}}] = custom_mem->d_ubu[{{it}}] - sqrt(blasfeo_dvecex1(&custom_mem->ineq_backoff_sq_buffer[ii+1], {{it}}));
         {%- endfor %}
         ocp_nlp_constraints_model_set(nlp_config, nlp_dims, nlp_in, nlp_out, ii+1, "ubu", custom_mem->d_ubu_tightened);
     {%- endif %}
@@ -753,24 +1513,25 @@ static void uncertainty_propagate_and_update(ocp_nlp_solver *solver, ocp_nlp_in 
 
 {%- if zoro_description.nlg_t + zoro_description.nug_t > 0 %}
         // Linear constraints: g
-        compute_gh_beta(&custom_mem->K_mat, &custom_mem->Cg_mat,
+        compute_gh_beta(K_mat, &custom_mem->Cg_mat,
                      &custom_mem->Dg_mat, &custom_mem->temp_CaDK_mat,
                      &custom_mem->temp_CaDKmP_mat, &custom_mem->temp_beta_mat,
                      &custom_mem->uncertainty_matrix_buffer[ii+1], ng, nx, nu);
-
+        blasfeo_ddiaex(ng, backoff_scaling_gamma*backoff_scaling_gamma, &custom_mem->temp_beta_mat, 0, 0, &custom_mem->ineq_backoff_sq_buffer[ii+1], nbu + nbx);
+{%- if zoro_description.feedback_optimization_mode is containing("BARRIER") %}
+        blasfeo_dvecad(ng, backoff_eps, &custom_mem->ricc_ones, 0, &custom_mem->ineq_backoff_sq_buffer[ii+1], nbu + nbx);
+{%- endif %}
     {%- if zoro_description.nlg_t > 0 %}
         {%- for it in zoro_description.idx_lg_t %}
         custom_mem->d_lg_tightened[{{it}}]
-            = custom_mem->d_lg[{{it}}]
-                + backoff_scaling_gamma * sqrt(blasfeo_dgeex1(&custom_mem->temp_beta_mat, {{it}}, {{it}}));
+            = custom_mem->d_lg[{{it}}] + sqrt(blasfeo_dvecex1(&custom_mem->ineq_backoff_sq_buffer[ii+1], nbu + nbx + {{it}}));
         {%- endfor %}
         ocp_nlp_constraints_model_set(nlp_config, nlp_dims, nlp_in, nlp_out, ii+1, "lg", custom_mem->d_lg_tightened);
     {%- endif %}
     {%- if zoro_description.nug_t > 0 %}
         {%- for it in zoro_description.idx_ug_t %}
         custom_mem->d_ug_tightened[{{it}}]
-            = custom_mem->d_ug[{{it}}]
-                - backoff_scaling_gamma * sqrt(blasfeo_dgeex1(&custom_mem->temp_beta_mat, {{it}}, {{it}}));
+            = custom_mem->d_ug[{{it}}] - sqrt(blasfeo_dvecex1(&custom_mem->ineq_backoff_sq_buffer[ii+1], nbu + nbx + {{it}}));
         {%- endfor %}
         ocp_nlp_constraints_model_set(nlp_config, nlp_dims, nlp_in, nlp_out, ii+1, "ug", custom_mem->d_ug_tightened);
     {%- endif %}
@@ -786,14 +1547,14 @@ static void uncertainty_propagate_and_update(ocp_nlp_solver *solver, ocp_nlp_in 
         blasfeo_pack_dmat(nh, nx, custom_mem->d_Cgh_mat+ng, ng+nh, &custom_mem->Ch_mat, 0, 0);
         blasfeo_pack_dmat(nh, nu, custom_mem->d_Dgh_mat+ng, ng+nh, &custom_mem->Dh_mat, 0, 0);
 
-        compute_gh_beta(&custom_mem->K_mat, &custom_mem->Ch_mat,
+        compute_gh_beta(K_mat, &custom_mem->Ch_mat,
                      &custom_mem->Dh_mat, &custom_mem->temp_CaDK_mat,
                      &custom_mem->temp_CaDKmP_mat, &custom_mem->temp_beta_mat,
                      &custom_mem->uncertainty_matrix_buffer[ii+1], nh, nx, nu);
-
-        // printf("temp_CaDKmP_mat k = %d", ii);
-        // blasfeo_print_dmat(nh, nx, &custom_mem->temp_CaDKmP_mat, 0, 0);
-
+        blasfeo_ddiaex(nh, backoff_scaling_gamma*backoff_scaling_gamma, &custom_mem->temp_beta_mat, 0, 0, &custom_mem->ineq_backoff_sq_buffer[ii+1], nbu + nbx + ng);
+{%- if zoro_description.feedback_optimization_mode is containing("BARRIER") %}
+        blasfeo_dvecad(nh, backoff_eps, &custom_mem->ricc_ones, 0, &custom_mem->ineq_backoff_sq_buffer[ii+1], nbu + nbx + ng);
+{%- endif %}
         // TODO: eval hessian(h) -> H_hess (nh*(nx+nu)**2)
         // temp_Kt_hhess = h_i_hess[:nx, :] + K^T * h_i_hess[nx:nx+nu, :]
         // tempCD = temp_CaDKmP_mat * temp_Kt_hhess
@@ -805,15 +1566,14 @@ static void uncertainty_propagate_and_update(ocp_nlp_solver *solver, ocp_nlp_in 
     {%- if zoro_description.nlh_t > 0 %}
         {%- for it in zoro_description.idx_lh_t %}
         custom_mem->d_lh_tightened[{{it}}]
-            = custom_mem->d_lh[{{it}}]
-                + backoff_scaling_gamma * sqrt(blasfeo_dgeex1(&custom_mem->temp_beta_mat, {{it}}, {{it}}));
+            = custom_mem->d_lh[{{it}}] + sqrt(blasfeo_dvecex1(&custom_mem->ineq_backoff_sq_buffer[ii+1], nbu + nbx + ng + {{it}}));
         {%- endfor %}
         ocp_nlp_constraints_model_set(nlp_config, nlp_dims, nlp_in, nlp_out, ii+1, "lh", custom_mem->d_lh_tightened);
     {%- endif %}
     {%- if zoro_description.nuh_t > 0 %}
         {%- for it in zoro_description.idx_uh_t %}
-        custom_mem->d_uh_tightened[{{it}}] = custom_mem->d_uh[{{it}}]
-                        - backoff_scaling_gamma * sqrt(blasfeo_dgeex1(&custom_mem->temp_beta_mat, {{it}}, {{it}}));
+        custom_mem->d_uh_tightened[{{it}}]
+            = custom_mem->d_uh[{{it}}] - sqrt(blasfeo_dvecex1(&custom_mem->ineq_backoff_sq_buffer[ii+1], nbu + nbx + ng + {{it}}));
         {%- endfor %}
         ocp_nlp_constraints_model_set(nlp_config, nlp_dims, nlp_in, nlp_out, ii+1, "uh", custom_mem->d_uh_tightened);
     {%- endif %}
@@ -827,35 +1587,108 @@ static void uncertainty_propagate_and_update(ocp_nlp_solver *solver, ocp_nlp_in 
     ocp_nlp_get_at_stage(solver, N-1, "B", custom_mem->d_B_mat);
     blasfeo_pack_dmat(nx, nu, custom_mem->d_B_mat, nx, &custom_mem->B_mat, 0, 0);
 
+{%- if zoro_description.feedback_optimization_mode != "CONSTANT_FEEDBACK" %}
+    // Note: only used to compute next P, will only be multiplied by 0 in compute_gh_beta.
+    K_mat = &custom_mem->riccati_K_buffer[N-1];
+{%- endif %}
+
 {% if zoro_description.input_W_add_diag %}
     compute_GWG_stagewise_varying(solver, custom_mem, data, N - 1);
 {%- endif %}
 
     // AK_mat = -B*K + A
-    compute_next_P_matrix(&(custom_mem->uncertainty_matrix_buffer[N-1]),
-                        &(custom_mem->uncertainty_matrix_buffer[N]),
-                        &custom_mem->A_mat, &custom_mem->B_mat,
-                        &custom_mem->K_mat, &custom_mem->GWG_mat,
-                        &custom_mem->AK_mat, &custom_mem->temp_AP_mat, nx, nu);
+{%- if (solver_options.sens_forw_p) and zoro_description.nonlinear_uncertainty_mode != "NONE" %}
+
+{%- if zoro_description.nonlinear_uncertainty_mode == "NOISE" %}
+    // NOISE / stepwise nonlinear noise:
+    // P_N = (A-BK) P_{N-1} (A-BK)^T + GWG^T + S_p Σ_p S_p^T
+    ocp_nlp_get_at_stage(solver, N-1, "S_p", custom_mem->d_S_p);
+    blasfeo_pack_dmat(nx, np, custom_mem->d_S_p, nx, &custom_mem->S_p_mat, 0, 0);
+
+
+    build_additive_term(&custom_mem->temp_GSp_mat,
+                        &custom_mem->GWG_mat,
+                        &custom_mem->S_p_mat,
+                        &custom_mem->Sigma_p_mat,
+                        &custom_mem->temp_SpSig_mat,
+                        nx, np);
+
+    compute_next_P_matrix(&custom_mem->uncertainty_matrix_buffer[N-1],
+                          &custom_mem->uncertainty_matrix_buffer[N],
+                          &custom_mem->A_mat, &custom_mem->B_mat,
+                          K_mat, &custom_mem->temp_GSp_mat,
+                          &custom_mem->AK_mat, &custom_mem->temp_AP_mat, nx, nu);
+
+{%- elif zoro_description.nonlinear_uncertainty_mode == "CONSTANT" %}
+    // Fixed parameter error over horizon:
+    //   P_w,N = (A-BK)P_w,N-1(A-BK)^T + GWG^T
+    //   Π_N   = (A-BK)Π_{N-1} + S_{p,N-1}
+    //   P_N   = P_w,N + Π_N Σ_p Π_N^T
+    ocp_nlp_get_at_stage(solver, N-1, "S_p", custom_mem->d_S_p);
+    blasfeo_pack_dmat(nx, np, custom_mem->d_S_p, nx, &custom_mem->S_p_mat, 0, 0);
+
+    // Compute P_w,N into uncertainty_matrix_buffer[N] (temporary storage)
+    compute_next_P_matrix(&custom_mem->P_w_mat,
+                          &custom_mem->uncertainty_matrix_buffer[N],
+                          &custom_mem->A_mat, &custom_mem->B_mat,
+                          K_mat, &custom_mem->GWG_mat,
+                          &custom_mem->AK_mat, &custom_mem->temp_AP_mat, nx, nu);
+
+    // Π_N
+    update_Pi_matrix(&custom_mem->temp_Pi_mat,
+                     &custom_mem->AK_mat,
+                     &custom_mem->Pi_mat,
+                     &custom_mem->S_p_mat,
+                     nx, np);
+
+    // Π_N Σ_p Π_N^T
+    build_param_cov_term_Pi(&custom_mem->temp_GSp_mat,
+                            &custom_mem->temp_Pi_mat,
+                            &custom_mem->Sigma_p_mat,
+                            &custom_mem->temp_SpSig_mat,
+                            nx, np);
+
+    // P_N = P_w,N + Π_N Σ_p Π_N^T
+    blasfeo_dgead(nx, nx, 1.0, &custom_mem->temp_GSp_mat, 0, 0,
+                  &custom_mem->uncertainty_matrix_buffer[N], 0, 0);
+
+{%- else %}
+    // NONE: ignore Σ_p / S_p entirely
+    compute_next_P_matrix(&custom_mem->uncertainty_matrix_buffer[N-1],
+                          &custom_mem->uncertainty_matrix_buffer[N],
+                          &custom_mem->A_mat, &custom_mem->B_mat,
+                          K_mat, &custom_mem->GWG_mat,
+                          &custom_mem->AK_mat, &custom_mem->temp_AP_mat, nx, nu);
+{%- endif %}
+
+{%- else %}
+    compute_next_P_matrix(&custom_mem->uncertainty_matrix_buffer[N-1],
+                          &custom_mem->uncertainty_matrix_buffer[N],
+                          &custom_mem->A_mat, &custom_mem->B_mat,
+                          K_mat, &custom_mem->GWG_mat,
+                          &custom_mem->AK_mat, &custom_mem->temp_AP_mat, nx, nu);
+{%- endif %}
+
 
     // state constraints nlbx_e_t
-{%- if zoro_description.nlbx_e_t + zoro_description.nubx_e_t> 0 %}
+{%- if zoro_description.nlbx_e_t + zoro_description.nubx_e_t > 0 %}
+    blasfeo_ddiaex_sp(nbx_e, backoff_scaling_gamma*backoff_scaling_gamma, custom_mem->idxbx_e, &custom_mem->uncertainty_matrix_buffer[N], 0, 0, &custom_mem->ineq_backoff_sq_buffer[N], 0);
+{%- if zoro_description.feedback_optimization_mode is containing("BARRIER") %}
+    blasfeo_dvecad(nbx_e, backoff_eps, &custom_mem->ricc_ones, 0, &custom_mem->ineq_backoff_sq_buffer[N], 0);
+{%- endif %}
 {%- if zoro_description.nlbx_e_t > 0 %}
     // lbx_e
     {%- for it in zoro_description.idx_lbx_e_t %}
     custom_mem->d_lbx_e_tightened[{{it}}]
-        = custom_mem->d_lbx_e[{{it}}]
-            + backoff_scaling_gamma * sqrt(blasfeo_dgeex1(&custom_mem->uncertainty_matrix_buffer[N],
-                custom_mem->idxbx_e[{{it}}],custom_mem->idxbx_e[{{it}}]));
+        = custom_mem->d_lbx_e[{{it}}] + sqrt(blasfeo_dvecex1(&custom_mem->ineq_backoff_sq_buffer[N], {{it}}));
     {%- endfor %}
     ocp_nlp_constraints_model_set(nlp_config, nlp_dims, nlp_in, nlp_out, N, "lbx", custom_mem->d_lbx_e_tightened);
 {%- endif %}
 {% if zoro_description.nubx_e_t > 0 %}
     // ubx_e
     {%- for it in zoro_description.idx_ubx_e_t %}
-    custom_mem->d_ubx_e_tightened[{{it}}] = custom_mem->d_ubx_e[{{it}}]
-            - backoff_scaling_gamma * sqrt(blasfeo_dgeex1(&custom_mem->uncertainty_matrix_buffer[N],
-                custom_mem->idxbx_e[{{it}}],custom_mem->idxbx_e[{{it}}]));
+    custom_mem->d_ubx_e_tightened[{{it}}]
+        = custom_mem->d_ubx_e[{{it}}] - sqrt(blasfeo_dvecex1(&custom_mem->ineq_backoff_sq_buffer[N], {{it}}));
     {%- endfor %}
     ocp_nlp_constraints_model_set(nlp_config, nlp_dims, nlp_in, nlp_out, N, "ubx", custom_mem->d_ubx_e_tightened);
 {%- endif %}
@@ -863,24 +1696,25 @@ static void uncertainty_propagate_and_update(ocp_nlp_solver *solver, ocp_nlp_in 
 
 {%- if zoro_description.nlg_e_t + zoro_description.nug_e_t > 0 %}
     // Linear constraints: g
-    compute_gh_beta(&custom_mem->K_mat, &custom_mem->Cg_mat,
+    compute_gh_beta(K_mat, &custom_mem->Cg_mat,
                     &custom_mem->dummy_Dgh_e_mat, &custom_mem->temp_CaDK_mat,
                     &custom_mem->temp_CaDKmP_mat, &custom_mem->temp_beta_mat,
-                    &custom_mem->uncertainty_matrix_buffer[N], ng, nx, nu);
-
+                    &custom_mem->uncertainty_matrix_buffer[N], ng_e, nx, nu);
+    blasfeo_ddiaex(ng_e, backoff_scaling_gamma*backoff_scaling_gamma, &custom_mem->temp_beta_mat, 0, 0, &custom_mem->ineq_backoff_sq_buffer[N], nbx_e);
+{%- if zoro_description.feedback_optimization_mode is containing("BARRIER") %}
+    blasfeo_dvecad(ng_e, backoff_eps, &custom_mem->ricc_ones, 0, &custom_mem->ineq_backoff_sq_buffer[N], nbx_e);
+{%- endif %}
 {%- if zoro_description.nlg_e_t > 0 %}
     {%- for it in zoro_description.idx_lg_e_t %}
     custom_mem->d_lg_e_tightened[{{it}}]
-        = custom_mem->d_lg_e[{{it}}]
-            + backoff_scaling_gamma * sqrt(blasfeo_dgeex1(&custom_mem->temp_beta_mat, {{it}}, {{it}}));
+        = custom_mem->d_lg_e[{{it}}] + sqrt(blasfeo_dvecex1(&custom_mem->ineq_backoff_sq_buffer[N], nbx_e + {{it}}));
     {%- endfor %}
     ocp_nlp_constraints_model_set(nlp_config, nlp_dims, nlp_in, nlp_out, N, "lg", custom_mem->d_lg_e_tightened);
 {%- endif %}
 {%- if zoro_description.nug_e_t > 0 %}
     {%- for it in zoro_description.idx_ug_e_t %}
     custom_mem->d_ug_e_tightened[{{it}}]
-        = custom_mem->d_ug_e[{{it}}]
-            - backoff_scaling_gamma * sqrt(blasfeo_dgeex1(&custom_mem->temp_beta_mat, {{it}}, {{it}}));
+        = custom_mem->d_ug_e[{{it}}] - sqrt(blasfeo_dvecex1(&custom_mem->ineq_backoff_sq_buffer[N], nbx_e + {{it}}));
     {%- endfor %}
     ocp_nlp_constraints_model_set(nlp_config, nlp_dims, nlp_in, nlp_out, N, "ug", custom_mem->d_ug_e_tightened);
 {%- endif %}
@@ -890,27 +1724,29 @@ static void uncertainty_propagate_and_update(ocp_nlp_solver *solver, ocp_nlp_in 
 {%- if zoro_description.nlh_e_t + zoro_description.nuh_e_t > 0 %}
     // nonlinear constraints: h
     // Get C_{k+1} and D_{k+1}
-    ocp_nlp_get_at_stage(solver, N, "C", custom_mem->d_Cgh_mat);
-    // NOTE: the d_Cgh_mat is column-major, the first ng rows are the Jacobians of the linear constraints
-    blasfeo_pack_dmat(nh, nx, custom_mem->d_Cgh_mat+ng, ng+nh, &custom_mem->Ch_mat, 0, 0);
+    ocp_nlp_get_at_stage(solver, N, "C", custom_mem->d_Cgh_e_mat);
+    // NOTE: the d_Cgh_e_mat is column-major, the first ng_e rows are the Jacobians of the linear constraints
+    blasfeo_pack_dmat(nh_e, nx, custom_mem->d_Cgh_e_mat+ng_e, ng_e+nh_e, &custom_mem->Ch_mat, 0, 0);
 
-    compute_gh_beta(&custom_mem->K_mat, &custom_mem->Ch_mat,
+    compute_gh_beta(K_mat, &custom_mem->Ch_mat,
                     &custom_mem->dummy_Dgh_e_mat, &custom_mem->temp_CaDK_mat,
                     &custom_mem->temp_CaDKmP_mat, &custom_mem->temp_beta_mat,
-                    &custom_mem->uncertainty_matrix_buffer[N], nh, nx, nu);
-
+                    &custom_mem->uncertainty_matrix_buffer[N], nh_e, nx, nu);
+    blasfeo_ddiaex(nh_e, backoff_scaling_gamma*backoff_scaling_gamma, &custom_mem->temp_beta_mat, 0, 0, &custom_mem->ineq_backoff_sq_buffer[N], nbx_e + ng_e);
+{%- if zoro_description.feedback_optimization_mode is containing("BARRIER") %}
+    blasfeo_dvecad(nh_e, backoff_eps, &custom_mem->ricc_ones, 0, &custom_mem->ineq_backoff_sq_buffer[N], nbx_e + ng_e);
+{%- endif %}
     {%- if zoro_description.nlh_e_t > 0 %}
         {%- for it in zoro_description.idx_lh_e_t %}
         custom_mem->d_lh_e_tightened[{{it}}]
-            = custom_mem->d_lh_e[{{it}}]
-                + backoff_scaling_gamma * sqrt(blasfeo_dgeex1(&custom_mem->temp_beta_mat, {{it}}, {{it}}));
+            = custom_mem->d_lh_e[{{it}}] + sqrt(blasfeo_dvecex1(&custom_mem->ineq_backoff_sq_buffer[N], nbx_e + ng_e + {{it}}));
         {%- endfor %}
         ocp_nlp_constraints_model_set(nlp_config, nlp_dims, nlp_in, nlp_out, N, "lh", custom_mem->d_lh_e_tightened);
     {%- endif %}
     {%- if zoro_description.nuh_e_t > 0 %}
         {%- for it in zoro_description.idx_uh_e_t %}
-        custom_mem->d_uh_e_tightened[{{it}}] = custom_mem->d_uh_e[{{it}}]
-                        - backoff_scaling_gamma * sqrt(blasfeo_dgeex1(&custom_mem->temp_beta_mat, {{it}}, {{it}}));
+        custom_mem->d_uh_e_tightened[{{it}}]
+            = custom_mem->d_uh_e[{{it}}] - sqrt(blasfeo_dvecex1(&custom_mem->ineq_backoff_sq_buffer[N], nbx_e + ng_e + {{it}}));
         {%- endfor %}
         ocp_nlp_constraints_model_set(nlp_config, nlp_dims, nlp_in, nlp_out, N, "uh", custom_mem->d_uh_e_tightened);
     {%- endif %}
@@ -928,52 +1764,100 @@ int custom_update_function({{ model.name }}_solver_capsule* capsule, double* dat
     ocp_nlp_out *nlp_out = {{ model.name }}_acados_get_nlp_out(capsule);
     ocp_nlp_solver *nlp_solver = {{ model.name }}_acados_get_nlp_solver(capsule);
     void *nlp_opts = {{ model.name }}_acados_get_nlp_opts(capsule);
+    ocp_nlp_memory *nlp_mem;
+    nlp_config->get(nlp_config, nlp_dims, nlp_solver->mem, "nlp_mem", &nlp_mem);
 
     int N = nlp_dims->N;
     int nx = {{ dims.nx }};
     int nw = {{ zoro_description.nw }};
 
-{%- if zoro_description.output_P_matrices or zoro_description.input_W_diag and not zoro_description.input_W_add_diag -%}
-    if (data_len != {{ zoro_description.data_size }})
+    int expected_len = {{ zoro_description.data_size }};
+    int streaming = 0;
+
+    if (expected_len > 0)
     {
-        printf("custom_update_zoro: data_length does not match expected one. Got %d, expected {{ zoro_description.data_size }}\n", data_len);
-        exit(1);
+        if (data == NULL || data_len == 0)
+        {
+            // not streaming -> use build-time matrices
+            streaming = 0;
+        }
+        else if (data_len != expected_len)
+        {
+            printf("[custom_update] ERROR: payload size %d != expected %d\n", data_len, expected_len);
+            return 1;
+        }
+        else
+        {
+            streaming = 1;
+        }
     }
-{%- endif %}
 
 {%- if zoro_description.input_P0_diag or zoro_description.input_P0 %}
-    if (data_len > 0)
+    if (streaming > 0)
     {
         reset_P0_matrix(nlp_dims, &custom_mem->uncertainty_matrix_buffer[0], data);
     }
 {%- endif %}
 
 {%- if zoro_description.input_W_diag %}
-    reset_process_noise_matrix(custom_mem, nlp_dims, &custom_mem->W_mat, data);
+    if (streaming > 0)
+    {
+        reset_process_noise_matrix(custom_mem, nlp_dims, &custom_mem->W_mat, data);
+    }
 {%- endif %}
 
 {%- if zoro_description.input_W_diag and not zoro_description.input_W_add_diag %}
-    // compute GWG with updated W
-    blasfeo_dgemm_nn(nx, nw, nw, 1.0, &custom_mem->unc_jac_G_mat, 0, 0,
-                        &custom_mem->W_mat, 0, 0, 0.0,
-                        &custom_mem->temp_GW_mat, 0, 0, &custom_mem->temp_GW_mat, 0, 0);
-    // GWG_mat = temp_GW_mat * unc_jac_G_mat^T
-    blasfeo_dgemm_nt(nx, nx, nw, 1.0, &custom_mem->temp_GW_mat, 0, 0,
-                        &custom_mem->unc_jac_G_mat, 0, 0, 0.0,
-                        &custom_mem->GWG_mat, 0, 0, &custom_mem->GWG_mat, 0, 0);
+    if (streaming > 0)
+    {
+        // compute GWG with updated W
+        blasfeo_dgemm_nn(nx, nw, nw, 1.0, &custom_mem->unc_jac_G_mat, 0, 0,
+                            &custom_mem->W_mat, 0, 0, 0.0,
+                            &custom_mem->temp_GW_mat, 0, 0, &custom_mem->temp_GW_mat, 0, 0);
+        // GWG_mat = temp_GW_mat * unc_jac_G_mat^T
+        blasfeo_dgemm_nt(nx, nx, nw, 1.0, &custom_mem->temp_GW_mat, 0, 0,
+                            &custom_mem->unc_jac_G_mat, 0, 0, 0.0,
+                            &custom_mem->GWG_mat, 0, 0, &custom_mem->GWG_mat, 0, 0);
+    }
+{%- endif %}
+
+{%- if (solver_options.sens_forw_p) and (zoro_description.input_Sigma_p_diag or zoro_description.input_Sigma_p) %}
+    if (streaming > 0)
+    {
+        reset_Sigma_p_matrix(&custom_mem->Sigma_p_mat, &data[custom_mem->offset_Sigma_p]);
+    }
+{%- endif %}
+
+{%- if zoro_description.feedback_optimization_mode != "CONSTANT_FEEDBACK" %}
+    acados_timer timer0;
+    acados_tic(&timer0);
+    riccati_recursion(nlp_solver, nlp_mem, custom_mem);
+    double time_riccati = acados_toc(&timer0);
 {%- endif %}
     uncertainty_propagate_and_update(nlp_solver, nlp_in, nlp_out, custom_mem, data, data_len);
 
 
 {%- if zoro_description.output_P_matrices %}
-    for (int i = 0; i < N+1; ++i)
+    if (streaming > 0)
     {
-        blasfeo_unpack_dmat(nx, nx, &custom_mem->uncertainty_matrix_buffer[i], 0, 0,
-                    &data[custom_mem->offset_P_out + i * nx * nx], nx);
+        for (int i = 0; i < N+1; ++i)
+        {
+            blasfeo_unpack_dmat(nx, nx, &custom_mem->uncertainty_matrix_buffer[i], 0, 0,
+                        &data[custom_mem->offset_P_out + i * nx * nx], nx);
+        }
+        {%- if zoro_description.output_riccati_t %}
+            data[custom_mem->offset_P_out + (N+1) * nx * nx] = time_riccati;
+        {%- endif %}
+    }
+{%- else %}
+    if (streaming > 0)
+    {
+    {%- if zoro_description.output_riccati_t %}
+        data[custom_mem->offset_P_out] = time_riccati;
+    {%- endif %}
     }
 {%- endif %}
 
-    return 1;
+    return 0;
 }
 
 
@@ -982,7 +1866,97 @@ int custom_update_terminate_function({{ model.name }}_solver_capsule* capsule)
     custom_memory *mem = capsule->custom_update_memory;
 
     free(mem->raw_memory);
-    return 1;
+    return 0;
+
+}
+
+/* Flatten all P_k (k = 0..N) from uncertainty_matrix_buffer into P_out.
+ * Layout: [P_0(:); P_1(:); ...; P_N(:)] in column-major blocks of size nx*nx.
+ * P_out_len must be at least (N+1)*nx*nx.
+ */
+int {{ model.name }}_acados_get_zoRO_Pk_matrices({{ model.name }}_solver_capsule* capsule, double *P_out, int P_out_len)
+{
+    if (capsule == NULL)
+    {
+        printf("[custom_update:get_P] ERROR: capsule is NULL\n");
+        return 1;
+    }
+
+    custom_memory *custom_mem = (custom_memory *) capsule->custom_update_memory;
+    if (custom_mem == NULL)
+    {
+        printf("[custom_update:get_P] ERROR: custom_update_memory is NULL\n");
+        return 1;
+    }
+
+    ocp_nlp_dims *nlp_dims = {{ model.name }}_acados_get_nlp_dims(capsule);
+    int N  = nlp_dims->N;
+    int nx = nlp_dims->nx[0];
+    int needed = (N + 1) * nx * nx;
+
+    if (P_out == NULL || P_out_len < needed)
+    {
+        printf("[custom_update:get_P] ERROR: output buffer too small (have %d, need %d)\n",
+               P_out_len, needed);
+        return 1;
+    }
+
+    double *dst = P_out;
+    for (int stage = 0; stage <= N; stage++)
+    {
+        struct blasfeo_dmat *P_stage = &custom_mem->uncertainty_matrix_buffer[stage];
+        blasfeo_unpack_dmat(nx, nx, P_stage, 0, 0, dst, nx);
+        dst += nx * nx;
+    }
+
+    return 0;
+}
+
+/* Flatten all K_k (k = 0..N-1) from riccati_K_buffer into K_out.
+ * Layout: [K_0(:); K_1(:); ...; K_{N-1}(:)] in column-major blocks of size nu*nx.
+ * K_out_len must be at least N*nu*nx.
+ */
+int {{ model.name }}_acados_get_zoRO_K_matrices({{ model.name }}_solver_capsule* capsule, double *K_out, int K_out_len)
+{
+    if (capsule == NULL)
+    {
+        printf("[custom_update:get_K] ERROR: capsule is NULL\n");
+        return 1;
+    }
+
+    custom_memory *custom_mem = (custom_memory *) capsule->custom_update_memory;
+    if (custom_mem == NULL)
+    {
+        printf("[custom_update:get_K] ERROR: custom_update_memory is NULL\n");
+        return 1;
+    }
+
+    ocp_nlp_dims *nlp_dims = {{ model.name }}_acados_get_nlp_dims(capsule);
+    int N  = nlp_dims->N;
+    int nx = nlp_dims->nx[0];
+    int nu = nlp_dims->nu[0];
+    int needed = N * nu * nx;
+
+    if (K_out == NULL || K_out_len < needed)
+    {
+        printf("[custom_update:get_K] ERROR: output buffer too small (have %d, need %d)\n",
+               K_out_len, needed);
+        return 1;
+    }
+
+    double *dst = K_out;
+    for (int stage = 0; stage < N; stage++)
+    {
+{%- if zoro_description.feedback_optimization_mode != "CONSTANT_FEEDBACK" %}
+        struct blasfeo_dmat *K_stage = &custom_mem->riccati_K_buffer[stage];
+{%- else %}
+        struct blasfeo_dmat *K_stage = &custom_mem->K_mat;
+{%- endif %}
+        blasfeo_unpack_dmat(nu, nx, K_stage, 0, 0, dst, nu);
+        dst += nu * nx;
+    }
+
+    return 0;
 }
 
 // useful prints for debugging
@@ -1001,4 +1975,4 @@ blasfeo_print_exp_dmat(nx, nx, &custom_mem->temp_AP_mat, 0, 0);
 printf("W_mat:\n");
 blasfeo_print_exp_dmat(nx, nx, &custom_mem->W_mat, 0, 0);
 printf("P_k+1:\n");
-blasfeo_print_exp_dmat(nx, nx, &(custom_mem->uncertainty_matrix_buffer[ii+1]), 0, 0);*/
+blasfeo_print_exp_dmat(nx, nx, &custom_mem->uncertainty_matrix_buffer[ii+1], 0, 0);*/

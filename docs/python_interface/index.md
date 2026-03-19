@@ -1,5 +1,11 @@
 # Python Interface
 
+``` eval_rst
+.. meta::
+   :description: Complete documentation for the acados Python interface (acados_template), including OCP solver setup, simulation interface, multi-phase OCPs, and API reference for nonlinear model predictive control (NMPC) in Python.
+   :keywords: acados Python, Python MPC, acados_template, AcadosOcp, AcadosOcpSolver, Python optimal control, NMPC Python, CasADi Python, acados API, Python interface
+```
+
 <!-- ``` eval_rst
 .. automodule:: acados_template.
     :members:
@@ -20,10 +26,10 @@ Examples for Python can be found in the [folder `examples/acados_python` of the 
 
 ## Optimal Control Problem description
 The Python interface relies on the same problem formulation as the MATLAB interface [see here](https://github.com/acados/acados/blob/main/docs/problem_formulation/problem_formulation_ocp_mex.pdf).
-Currently, Python >= 3.8 is tested.
+Currently, all tests are run with Python 3.10, while we aim to support Python >= 3.8.
 
 ## Installation
-1. Compile and install `acados` by following the [`CMake` installation instructions](../installation/index.md).
+1. Compile and install `acados` as a shared library by following the [`CMake` installation instructions](../installation/index.md).
 
 2. Optional: Recommended.
     Create a Python virtual environment using `virtualenv`.
@@ -182,6 +188,22 @@ The cython based wrapper is called [`AcadosOcpSolverCython`](#acados_template.ac
     :exclude-members:
 ```
 
+
+### `ZoroDescription`
+``` eval_rst
+.. automodule:: acados_template.zoro_description
+    :members: ZoroDescription
+    :private-members:
+    :exclude-members:
+```
+
+### `Gnsf` structured dynamic system
+``` eval_rst
+.. automodule:: acados_template.gnsf
+    :members:
+    :private-members:
+    :exclude-members:
+```
 
 
 ## `acados` integrator interface

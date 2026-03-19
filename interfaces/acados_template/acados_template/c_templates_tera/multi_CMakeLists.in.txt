@@ -48,16 +48,9 @@
     {%- set model_external_shared_lib_name = solver_options.model_external_shared_lib_name %}
 {%- endif %}
 
-{#- control operator #}
-{%- if os and os == "pc" %}
-    {%- set control = "&" %}
-{%- else %}
-    {%- set control = ";" %}
-{%- endif %}
-
-{%- if acados_link_libs and os and os == "pc" %}{# acados linking libraries and flags #}
-    {%- set link_libs = acados_link_libs.qpoases ~ " " ~ acados_link_libs.hpmpc ~ " " ~ acados_link_libs.osqp ~ " " ~ acados_link_libs.daqp -%}
-    {%- set openmp_flag = acados_link_libs.openmp %}
+{%- if code_gen_opts.acados_link_libs and code_gen_opts.os and code_gen_opts.os == "pc" %}{# acados linking libraries and flags #}
+    {%- set link_libs = code_gen_opts.acados_link_libs.qpoases ~ " " ~ code_gen_opts.acados_link_libs.hpmpc ~ " " ~ code_gen_opts.acados_link_libs.osqp ~ " " ~ code_gen_opts.acados_link_libs.daqp -%}
+    {%- set openmp_flag = code_gen_opts.acados_link_libs.openmp %}
 {%- else %}
     {%- set openmp_flag = " " %}
     {%- if solver_options.qp_solver == "FULL_CONDENSING_QPOASES" %}
@@ -92,9 +85,9 @@ endif()
 
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE {{ code_export_directory | replace(from="\", to="/") }})
-    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE {{ code_export_directory | replace(from="\", to="/") }})
-    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE {{ code_export_directory | replace(from="\", to="/") }})
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE {{ code_gen_opts.code_export_directory | replace(from="\", to="/") }})
+    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE {{ code_gen_opts.code_export_directory | replace(from="\", to="/") }})
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE {{ code_gen_opts.code_export_directory | replace(from="\", to="/") }})
 endif()
 
 
@@ -127,11 +120,11 @@ set(MODEL_SRC
     {{ model[jj].name }}_model/{{ model[jj].name }}_impl_dae_hess.c
     {%- endif %}
 {%- elif mocp_opts.integrator_type[jj] == "GNSF" %}
-    {% if model[jj].gnsf_purely_linear != 1 %}
+    {% if model[jj].gnsf_model.purely_linear != 1 %}
     {{ model[jj].name }}_model/{{ model[jj].name }}_gnsf_phi_fun.c
     {{ model[jj].name }}_model/{{ model[jj].name }}_gnsf_phi_fun_jac_y.c
     {{ model[jj].name }}_model/{{ model[jj].name }}_gnsf_phi_jac_y_uhat.c
-        {%- if model[jj].gnsf.nontrivial_f_LO == 1 %}
+        {%- if model[jj].gnsf_model.nontrivial_f_LO == 1 %}
     {{ model[jj].name }}_model/{{ model[jj].name }}_gnsf_f_lo_fun_jac_x1k1uz.c
         {%- endif %}
     {%- endif %}
@@ -288,8 +281,8 @@ set(EXTERNAL_LIB)
 {%- endif %}
 
 # set some search paths for preprocessor and linker
-set(ACADOS_INCLUDE_PATH {{ acados_include_path | replace(from="\", to="/")  }} CACHE PATH "Define the path which contains the include directory for acados.")
-set(ACADOS_LIB_PATH {{ acados_lib_path | replace(from="\", to="/") }} CACHE PATH "Define the path which contains the lib directory for acados.")
+set(ACADOS_INCLUDE_PATH {{ code_gen_opts.acados_include_path | replace(from="\", to="/")  }} CACHE PATH "Define the path which contains the include directory for acados.")
+set(ACADOS_LIB_PATH {{ code_gen_opts.acados_lib_path | replace(from="\", to="/") }} CACHE PATH "Define the path which contains the lib directory for acados.")
 
 # c-compiler flags for debugging
 set(CMAKE_C_FLAGS_DEBUG "-O0 -ggdb")

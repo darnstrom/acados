@@ -48,6 +48,7 @@ classdef AcadosSimOptions < handle
         ext_fun_expand_dyn
         compile_interface
         with_batch_functionality
+        sens_forw_p
     end
 
     methods
@@ -60,6 +61,7 @@ classdef AcadosSimOptions < handle
             obj.newton_iter = 3;
             obj.newton_tol = 0.;
             obj.sens_forw = true;
+            obj.sens_forw_p = false;     % default: disabled
             obj.sens_adj = false;
             obj.sens_algebraic = false;
             obj.sens_hess = false;
@@ -77,7 +79,7 @@ classdef AcadosSimOptions < handle
             obj.compile_interface = []; % corresponds to automatic detection, possible values: true, false, []
         end
 
-        function s = struct(self)
+        function s = to_struct(self)
             if exist('properties')
                 publicProperties = eval('properties(self)');
             else

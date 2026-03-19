@@ -47,20 +47,20 @@ def main(qp_solver_ric_alg: int, generate_solvers=True, plot_trajectory=False):
     p_test = p_nominal + 0.3
     Fmax = 80.0
 
-    cost_scale_as_param = True
+    cost_scale_as_extra_param = True
     with_parametric_constraint = True
     with_nonlinear_constraint = True
 
-    ocp = export_parametric_ocp(x0=x0, N_horizon=N_horizon, T_horizon=T_horizon, Fmax=Fmax, qp_solver_ric_alg=1, cost_scale_as_param=cost_scale_as_param, with_parametric_constraint=with_parametric_constraint, with_nonlinear_constraint=with_nonlinear_constraint)
+    ocp = export_parametric_ocp(x0=x0, N_horizon=N_horizon, T_horizon=T_horizon, Fmax=Fmax, qp_solver_ric_alg=1, cost_scale_as_extra_param=cost_scale_as_extra_param, with_parametric_constraint=with_parametric_constraint, with_nonlinear_constraint=with_nonlinear_constraint, scale_path_cost=True)
     ocp_solver = AcadosOcpSolver(ocp, json_file="parameter_augmented_acados_ocp.json", generate=generate_solvers, build=generate_solvers)
 
     # create sensitivity solver
-    ocp = export_parametric_ocp(x0=x0, N_horizon=N_horizon, T_horizon=T_horizon, Fmax=Fmax, hessian_approx='EXACT', qp_solver_ric_alg=qp_solver_ric_alg, cost_scale_as_param=cost_scale_as_param, with_parametric_constraint=with_parametric_constraint, with_nonlinear_constraint=with_nonlinear_constraint)
+    ocp = export_parametric_ocp(x0=x0, N_horizon=N_horizon, T_horizon=T_horizon, Fmax=Fmax, hessian_approx='EXACT', qp_solver_ric_alg=qp_solver_ric_alg, cost_scale_as_extra_param=cost_scale_as_extra_param, with_parametric_constraint=with_parametric_constraint, with_nonlinear_constraint=with_nonlinear_constraint, scale_path_cost=True)
     ocp.model.name = 'sensitivity_solver'
     ocp.code_export_directory = f'c_generated_code_{ocp.model.name}'
     sensitivity_solver = AcadosOcpSolver(ocp, json_file=f"{ocp.model.name}.json", generate=generate_solvers, build=generate_solvers)
 
-    if cost_scale_as_param:
+    if cost_scale_as_extra_param:
         p_vals = [
             np.array([p_nominal, 1.0]),
             np.array([p_nominal + 0.2, 1.0]),
@@ -122,8 +122,8 @@ def solve_and_compare_fwd_and_adj(ocp_solver: AcadosOcpSolver,
         print(f"max lambda of parametric constraints: {max_lam:.2f}\n")
 
     # transfer iterate to sensitivity solver
-    iterate = ocp_solver.store_iterate_to_obj()
-    sensitivity_solver.load_iterate_from_obj(iterate)
+    iterate = ocp_solver.get_iterate()
+    sensitivity_solver.set_iterate(iterate)
 
     # setup QP matrices and factorize
     sensitivity_solver.setup_qp_matrices_and_factorize()
@@ -141,7 +141,7 @@ def solve_and_compare_fwd_and_adj(ocp_solver: AcadosOcpSolver,
     #     # print(f"K_mat = {K_mat}")
     #     print(f"Lr_mat = {Lr_mat}")
 
-    if sensitivity_solver.get_status() not in [0, 2]:
+    if sensitivity_solver.status not in [0, 2]:
         breakpoint()
 
     # adjoint direction for one stage
