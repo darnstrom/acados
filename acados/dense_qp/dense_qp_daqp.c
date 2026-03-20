@@ -589,8 +589,8 @@ static void dense_qp_daqp_update_memory(dense_qp_in *qp_in, const dense_qp_daqp_
         DAQP_SET_SOFT(idxdaqp);
 
         // Quadratic slack penalty needs to be nonzero in DAQP
-        mem->Zl[ii] = MAX(1e-8,mem->Zl[ii]);
-        mem->Zu[ii] = MAX(1e-8,mem->Zu[ii]);
+        mem->Zl[ii] = MAX(1e-6,mem->Zl[ii]);
+        mem->Zu[ii] = MAX(1e-6,mem->Zu[ii]);
 
         // Setup soft weight used in DAQP
         work->rho_ls[idxdaqp] = 1/mem->Zl[ii];
