@@ -767,8 +767,14 @@ int dense_qp_daqp(void* config_, dense_qp_in *qp_in, dense_qp_out *qp_out, void 
         return daqp_status;
 
     // solve LDP
-    if (opts->warm_start==1)
+    if (opts->warm_start==1) {
+        // Reset n_active to 0 and rebuild LDL factorization for warm-start active set.
+        // This prevents double-adding constraints when daqp_update_ldp also called
+        // daqp_activate_constraints internally (e.g. for equality constraints), and
+        // also avoids operating on a stale LDL factorization from the previous solve.
+        reset_daqp_workspace(work);
         daqp_activate_constraints(work);
+    }
 
     // TODO: shift active set? - not in SQP but would be nice as an option in SQP_RTI.
 
